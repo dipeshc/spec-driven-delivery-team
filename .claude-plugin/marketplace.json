@@ -7,7 +7,7 @@
     {
       "name": "delivery-team",
       "source": "./",
-      "description": "Docs-driven autonomous software delivery team: a Manager works a prioritized file-based backlog, dispatching Developers, a Reviewer, a singleton Merge-Clerk, and a QA guardian across isolated git worktrees."
+      "description": "Docs-driven autonomous software delivery team for any coding CLI: an orchestrator works a prioritized file-based backlog, dispatching Developers, a Reviewer, a Merge-Clerk and QA across isolated git worktrees."
     }
   ]
 }

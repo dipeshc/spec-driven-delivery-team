@@ -1,15 +1,14 @@
 # Project profile — `spec-driven-delivery-team`
 
-This repo dogfoods the framework it ships. The global delivery machinery (the
-charter, skills, and agents) is generic; this file holds everything specific to
-working on *this* repository.
+This repo dogfoods the framework it ships. The delivery machinery (the
+charter, the orchestrator, the roles, the skills) is generic; this file and
+`config.toml` beside it hold everything specific to working on *this*
+repository.
 
 ---
 
 ## Repo
 
-- **Root path:** `/Users/dipesh/code/spec-driven-delivery-team`
-- **Default branch:** `main`
 - **Package manager / runtime:** `python3` 3.11+ for the orchestrator (standard
   library only); `uv` for the development tooling (`ruff`, `mypy`, `pytest`)
   declared in `pyproject.toml`. The rest of the repo is Markdown.
@@ -29,37 +28,32 @@ working on *this* repository.
 
 ## Quality gate
 
-- **Scoped / Full:** the commands in `config.toml` `[gate]` (ruff, mypy and
-  pytest over `bin/sdt` and `tests/`). They verify the orchestrator only.
-- **Not covered:** the role prompts, skills and docs are prose, so the gate
-  cannot exercise them; the reviewer's reading against `docs/architecture.md`
-  and `docs/team-charter.md` IS their verification, and the
-  `consistency-check` role (spec-vs-spec, then spec-vs-code over the role,
-  skill and adapter files) is this repo's audit of them.
-- **Not covered:** everything not readable — there is no automated gate, so
-  nothing is compiled, run, or booted; reading against the spec is the entire
-  verification.
-- **Notes:** every relative link and `${CLAUDE_PLUGIN_ROOT}` path referenced in
-  a changed file must resolve to a file that exists in the repo.
+- **Not covered:** the role prompts, skills, adapters and docs are prose, so
+  the gate (ruff, mypy and pytest over `bin/sdt` and `tests/`) cannot
+  exercise them; the reviewer's reading against `docs/architecture.md` and
+  `docs/team-charter.md` IS their verification, and the `consistency-check`
+  role (spec-vs-spec, then spec-vs-code over the role, skill and adapter
+  files) is this repo's audit of them. No adapter is exercised against a real
+  engine by the gate: the end-to-end test runs on the stub engine only.
+- **Notes:** every relative link and every path a file names must resolve to
+  a file that exists in the repo.
 
 ## Backlog
 
-- **Location:** `docs/backlog/` (per-item files, priority in the filename,
-  `P0`–`P3`).
 - **Conventions doc:** n/a — the charter's "Backlog conventions" section is the
   convention.
-- **Item lifecycle:** the merging commit deletes the item file.
+- **Item lifecycle:** the landing commit deletes the item file.
 
 ## Specification source of truth
 
 - **Docs are spec?** Yes. `docs/architecture.md` and `docs/team-charter.md`
   specify the framework; the orchestrator under `bin/`, the role files under
   `roles/`, the adapters, the skills and the Claude-only extras under
-  `extras/claude/` implement them. A mismatch means
-  the implementing file is wrong —
-  unless the change is a deliberate re-decision, which is an owner call and
-  updates the spec first. `docs/profile.template.md` is a shipped
-  artifact whose example values describe consuming projects, not this repo.
+  `extras/claude/` implement them. A mismatch means the implementing file is
+  wrong — unless the change is a deliberate re-decision, which is an owner
+  call and updates the spec first. `docs/profile.template.md` and
+  `docs/config.template.toml` are shipped artifacts whose example values
+  describe consuming projects, not this repo.
 - **Docs root:** `docs/`
 - **Decision records:** n/a
 - **Conventions doc:** n/a — match the surrounding prose style and the existing
@@ -67,13 +61,8 @@ working on *this* repository.
 
 ## Repo-wide invariant guards
 
-- n/a — no automated guards; the containment and agnosticism rules below are
-  enforced by review and the consistency check.
-
-## QA watch loop
-
-- n/a — no watch loop; QA (or the root, on request) runs the
-  `consistency-check` skill directly.
+- n/a — no automated guards beyond the gate; the containment and agnosticism
+  rules below are enforced by review and the consistency check.
 
 ## UI surfaces
 
@@ -90,17 +79,7 @@ working on *this* repository.
 ## Sanctioned direct-write paths
 
 - `docs/backlog/` — filed items.
-- `.delivery-team/` — this profile.
-
-## Worktree layout
-
-- **Where worktrees are created:** `<repo>/.delivery-team/worktrees/<name>/`
-- **Branch naming:** `item/<slug>`
-- **Landing style:** fast-forward only, one commit per item.
-
-## Reviewer pool
-
-- n/a — the default single Reviewer.
+- `.delivery-team/` — this profile and `config.toml`.
 
 ## Project-specific content rules
 
@@ -110,7 +89,8 @@ working on *this* repository.
 - **Engine containment:** how a specific coding CLI is invoked (its flags,
   model names, output shape) may appear only in that engine's adapter under
   `adapters/`; every other file speaks of "the engine" and at most points
-  there.
+  there. The exception is `extras/claude/`, which is Claude-only by design and
+  says so.
 
 ## Verification environment
 
