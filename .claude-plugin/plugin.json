@@ -5,8 +5,8 @@
   "author": {
     "name": "Dipesh Chauhan"
   },
-  "homepage": "https://github.com/dipeshc/claude-delivery-team",
-  "repository": "https://github.com/dipeshc/claude-delivery-team",
+  "homepage": "https://github.com/dipeshc/spec-driven-delivery-team",
+  "repository": "https://github.com/dipeshc/spec-driven-delivery-team",
   "license": "MIT",
   "keywords": ["agents", "multi-agent", "delivery", "backlog", "code-review", "worktrees", "docs-as-spec", "spec-driven"]
 }

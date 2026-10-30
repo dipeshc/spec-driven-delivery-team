@@ -1,4 +1,4 @@
-# Project profile — `claude-delivery-team`
+# Project profile — `spec-driven-delivery-team`
 
 This repo dogfoods the framework it ships. The global delivery machinery (the
 charter, skills, and agents) is generic; this file holds everything specific to
@@ -8,7 +8,7 @@ working on *this* repository.
 
 ## Repo
 
-- **Root path:** `/Users/dipesh/code/claude-delivery-team`
+- **Root path:** `/Users/dipesh/code/spec-driven-delivery-team`
 - **Default branch:** `main`
 - **Package manager / runtime:** n/a — no build and no dependencies; the repo is
   Markdown plus one workflow script the Claude Code runtime executes.

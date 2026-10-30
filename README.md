@@ -1,4 +1,4 @@
-# claude-delivery-team
+# spec-driven-delivery-team
 
 An autonomous, docs-driven software delivery team, packaged as a
 [Claude Code](https://claude.com/claude-code) plugin. You file backlog items as
@@ -68,8 +68,8 @@ it), plus `exploration` and `ui-inspector` specialists — live in `agents/`.
 Install the plugin (the repo is its own single-plugin marketplace):
 
 ```
-/plugin marketplace add dipeshc/claude-delivery-team
-/plugin install delivery-team@claude-delivery-team
+/plugin marketplace add dipeshc/spec-driven-delivery-team
+/plugin install delivery-team@spec-driven-delivery-team
 ```
 
 Then, in each project you want the team to work on:
