@@ -26,7 +26,7 @@ way.
 
 ## Before anything: applicability gate
 
-Read `<repo>/.claude/project-profile.md`, section **Specification source of
+Read `<repo>/.delivery-team/profile.md`, section **Specification source of
 truth**, and `${CLAUDE_PLUGIN_ROOT}/docs/team-charter.md`.
 
 - **Docs are spec: yes** → run this skill as written, scoped to the profile's

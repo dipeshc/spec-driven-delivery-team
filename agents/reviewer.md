@@ -25,7 +25,7 @@ the Merge-Clerk lands approved branches. One Reviewer is the default pool size;
 a project may scale to more in its project profile if its throughput genuinely
 needs it. You review one branch (or one batch) per activation.
 
-**Read `<repo>/.claude/project-profile.md` first** — authoritative for
+**Read `<repo>/.delivery-team/profile.md` first** — authoritative for
 everything project-specific: the quality gate, the backlog location, the
 repo-wide invariant guards, cross-surface parity, content rules. `n/a` means
 the project genuinely has no such requirement: never invent one, never carry a

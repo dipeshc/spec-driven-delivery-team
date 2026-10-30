@@ -16,7 +16,7 @@ the default branch, so it can even overlap a running team if the user wants both
 
 When the user picks a spike to keep, file a `P#-promote-<spike>` backlog item
 (into the location and under the conventions named in
-`<repo>/.claude/project-profile.md`, **Backlog**) referencing the spike's
+`<repo>/.delivery-team/profile.md`, **Backlog**) referencing the spike's
 branch/tag + SHA and what — if anything — the user wants changed from the spike. A team Developer adapts it onto the current default
 branch as one commit; a Reviewer reviews it at production standard; the
 Merge-Clerk lands it and the QA guards the merge.

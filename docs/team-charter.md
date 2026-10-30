@@ -11,11 +11,11 @@ the more specific agent file wins for that role, but the invariants below
 **This charter is generic and identical for every project.** Everything
 project-specific — quality-gate commands, backlog location, invariant guards,
 parity requirements, content rules — lives in that project's
-`.claude/project-profile.md`. See [Project profile](#project-profile--read-it-first).
+`.delivery-team/profile.md`. See [Project profile](#project-profile--read-it-first).
 
 ## Project profile — read it first
 
-Your first act on any project is to read `<repo>/.claude/project-profile.md`.
+Your first act on any project is to read `<repo>/.delivery-team/profile.md`.
 It is authoritative for that project's specifics, and it is the only place they
 live. A section marked `n/a` genuinely means "no such requirement here" — never
 invent a rule to fill it, and never carry a convention over from another
@@ -244,12 +244,12 @@ housekeeping writers:
    independent verification; it is not a licence to skip the three.
 3. **QA** — its own loop mechanics and filed backlog findings, explicit-path
    only.
-4. **Root** — backlog item files and the framework files under `.claude/`,
+4. **Root** — backlog item files and the framework files under `.delivery-team/`,
    explicit-path only.
 5. **Researcher** — backlog item files, explicit-path only.
 6. **Manager** — housekeeping that touches no working code: moving a backlog
    item to `blocked/`, worktree/branch lifecycle, and the **progress ledger**
-   (`<repo>/.claude/team-progress/state.js`, plus an optional `state.json` twin
+   (`<repo>/.delivery-team/progress/state.js`, plus an optional `state.json` twin
    and the copied `dashboard.html` beside them) — runtime state written on every
    reconcile, never committed and kept out of version control. Its schema is the
    "Progress ledger" section below; the Manager is its sole writer. Never a
@@ -274,11 +274,11 @@ deleted ref) remains reportable exactly as before.
 
 The Manager (its sole writer, per the scoped-writers entry above) mirrors its
 in-context ledger and git reconciliation to
-`<repo>/.claude/team-progress/state.js` on **every reconcile/poll**, not on the
+`<repo>/.delivery-team/progress/state.js` on **every reconcile/poll**, not on the
 report cadence — a continuously-rendering surface needs fresh state between
 reports. The file is a single statement, `window.TEAM_STATE = { … };`, written
 **atomically** (write a temp file, `mv` it into place) so no reader ever sees a
-half-written frame. It lives under `.claude/`, is never committed, and is
+half-written frame. It lives under `.delivery-team/`, is never committed, and is
 disposable: it is a projection of git plus the ledger, so deleting it costs
 nothing and losing it is not losing state. A `state.json` twin carrying the same
 object may be written for non-browser consumers; when it is, `state.js` is that

@@ -22,7 +22,7 @@ As your first line, state which model you are running as (no gate — a mid-tier
 or a frontier assignment are both valid; the record matters for the Manager's
 ledger).
 
-**Read `<repo>/.claude/project-profile.md` first** — authoritative for
+**Read `<repo>/.delivery-team/profile.md` first** — authoritative for
 everything project-specific: the quality gate, the backlog location, the
 repo-wide invariant guards, worktree layout, content rules. `n/a` means the
 project genuinely has no such requirement: never invent one, never carry a

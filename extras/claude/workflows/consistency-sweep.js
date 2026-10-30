@@ -79,7 +79,7 @@ const CLASSES = [
 
 phase('Map')
 const map = await agent(
-  `Locate the delivery-team plugin's consistency-check skill on disk — its file is \`skills/consistency-check/SKILL.md\` under the installed plugin root, which is typically under ~/.claude/plugins/. Return its absolute path as skillPath; if the repo you are in IS the plugin, use its own copy. Read it, and read <repo>/.claude/project-profile.md, then apply that skill's "Before anything: applicability gate" exactly.
+  `Locate the delivery-team plugin's consistency-check skill on disk — its file is \`skills/consistency-check/SKILL.md\` under the installed plugin root, which is typically under ~/.claude/plugins/. Return its absolute path as skillPath; if the repo you are in IS the plugin, use its own copy. Read it, and read <repo>/.delivery-team/profile.md, then apply that skill's "Before anything: applicability gate" exactly.
 
 Return: whether the skill applies at all and why; whether docs are spec; the docs root; whether the project declares decision records and a glossary; the backlog path; and the full list of files that make up the specification and the definitions it governs (the docs root, plus agent and skill definitions, manifests and the profile template if the project ships them).
 

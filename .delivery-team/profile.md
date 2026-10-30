@@ -14,9 +14,12 @@ working on *this* repository.
   Markdown plus one workflow script the Claude Code runtime executes.
 - **Layout:**
   - `.claude-plugin/` — plugin manifest.
+  - `.delivery-team/` — this profile (tracked) beside the run's git-ignored
+    runtime state.
   - `agents/` — the team's agent definitions.
   - `skills/` — the plugin's skills, one directory per skill.
-  - `workflows/` — `consistency-sweep.js`, the parallel spec audit.
+  - `extras/claude/` — Claude-only surfaces: the statusline skill and script,
+    and `workflows/consistency-sweep.js`, the parallel spec audit.
   - `docs/` — the spec: `architecture.md` (entry doc), `team-charter.md`,
     `project-profile.template.md`, and `backlog/`.
 
@@ -46,7 +49,7 @@ working on *this* repository.
 
 - **Docs are spec?** Yes. `docs/architecture.md` and `docs/team-charter.md`
   specify the framework; the agent files under `agents/`, the skills under
-  `skills/` and the workflow under `workflows/` implement them. A mismatch means
+  `skills/` and the Claude-only extras under `extras/claude/` implement them. A mismatch means
   the implementing file is wrong —
   unless the change is a deliberate re-decision, which is an owner call and
   updates the spec first. `docs/project-profile.template.md` is a shipped
@@ -81,11 +84,11 @@ working on *this* repository.
 ## Sanctioned direct-write paths
 
 - `docs/backlog/` — filed items.
-- `.claude/` — this profile.
+- `.delivery-team/` — this profile.
 
 ## Worktree layout
 
-- **Where worktrees are created:** `<repo>/.claude/worktrees/<name>/`
+- **Where worktrees are created:** `<repo>/.delivery-team/worktrees/<name>/`
 - **Branch naming:** `item/<slug>`
 - **Landing style:** fast-forward only, one commit per item.
 

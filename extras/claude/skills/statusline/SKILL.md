@@ -41,7 +41,7 @@ script to a stable, version-independent path under the user's home and points
 
    ```
    mkdir -p "$HOME/.claude/delivery-team"
-   cp "${CLAUDE_PLUGIN_ROOT}/assets/statusline.sh" "$HOME/.claude/delivery-team/statusline.sh"
+   cp "${CLAUDE_PLUGIN_ROOT}/extras/claude/skills/statusline/statusline.sh" "$HOME/.claude/delivery-team/statusline.sh"
    chmod +x "$HOME/.claude/delivery-team/statusline.sh"
    ```
 

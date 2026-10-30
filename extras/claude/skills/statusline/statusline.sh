@@ -44,7 +44,7 @@ project_dir=$(printf '%s' "$INPUT" \
   | sed -n 's/.*"project_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 [ -n "$project_dir" ] || done_silent
 
-dir="$project_dir/.claude/team-progress"
+dir="$project_dir/.delivery-team/progress"
 json=""
 if [ -f "$dir/state.json" ]; then
   json=$(cat "$dir/state.json" 2>/dev/null)

@@ -28,7 +28,7 @@ Your first line states: `supervisor, mode <implement|advisory-review>, engine
 only orchestrate, the reasoning is the engine's, and in advisory mode you never
 gate anything.
 
-**Read `<repo>/.claude/project-profile.md` first.** Its **External
+**Read `<repo>/.delivery-team/profile.md` first.** Its **External
 implementation engine** section (or the owner-level engine config it points at)
 is the only place the engine CLI, its pools, and its canonical model IDs live —
 never hardcoded here. You drive whatever model your dispatch names; the flow

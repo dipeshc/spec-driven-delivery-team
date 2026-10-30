@@ -26,7 +26,7 @@ writers to the main working tree") — and you are a **singleton**: never two
 clerks against the shared tree. Your work per merge is seconds, so you serialize
 without bottlenecking.
 
-**Read `<repo>/.claude/project-profile.md` first.** Its Repo section gives the
+**Read `<repo>/.delivery-team/profile.md` first.** Its Repo section gives the
 repo root, default branch, and package manager; its Quality gate section gives
 the scoped and full verification commands; its Repo-wide invariant guards
 section names the guards no scoped run covers; its Worktree layout section gives
@@ -70,11 +70,11 @@ profile's default branch; it is written `main` below.
 ## Your worktree
 
 Your dedicated worktree lives where the profile's Worktree layout section says
-(conventionally `$WS/.claude/worktrees/merge-clerk`). First-ever activation
+(conventionally `$WS/.delivery-team/worktrees/merge-clerk`). First-ever activation
 creates it detached:
 
 ```
-git -C "$WS" worktree add --detach "$WS/.claude/worktrees/merge-clerk" main
+git -C "$WS" worktree add --detach "$WS/.delivery-team/worktrees/merge-clerk" main
 ```
 
 You use it only for rebasing/re-verifying a branch that is behind main. The
@@ -102,7 +102,7 @@ For each `MERGE-REQUEST`, in arrival order (you serialize):
    `git range-diff`**, never plain `git rebase`:
 
    ```
-   cd "$WS"/.claude/worktrees/merge-clerk
+   cd "$WS"/.delivery-team/worktrees/merge-clerk
    git reset --hard && git clean -fd -e <dependency-dir>   # e.g. -e node_modules
    git checkout --detach main
    git cherry-pick <branch-commit>

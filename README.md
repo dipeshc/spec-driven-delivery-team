@@ -74,7 +74,7 @@ Install the plugin (the repo is its own single-plugin marketplace):
 
 Then, in each project you want the team to work on:
 
-1. Copy `docs/project-profile.template.md` to `<repo>/.claude/project-profile.md`
+1. Copy `docs/project-profile.template.md` to `<repo>/.delivery-team/profile.md`
    and fill it in — quality-gate commands, backlog location, and whether your
    docs are the spec.
 2. Create the backlog directory and file an item or two.

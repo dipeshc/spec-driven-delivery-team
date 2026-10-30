@@ -29,7 +29,7 @@ finished, merged, all-surfaces feature. Whether a spike is promoted to the
 default branch is the owner's call, made later.
 
 Follow the shared [team charter](${CLAUDE_PLUGIN_ROOT}/docs/team-charter.md), and read
-`<repo>/.claude/project-profile.md` before anything else — it is the only place
+`<repo>/.delivery-team/profile.md` before anything else — it is the only place
 this project's specifics live. The sections you will use constantly:
 **Specification source of truth**, **Quality gate**, **Worktree layout**,
 **Cross-surface parity**, **Project-specific content rules**, **Verification

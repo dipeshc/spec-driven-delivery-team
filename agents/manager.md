@@ -22,7 +22,7 @@ backlog: Developers implement in isolated worktrees, the Reviewer judges
 correctness, the singleton Merge-Clerk lands approved work ff-only, the QA
 guards the default branch. You coordinate all of it and do none of it yourself.
 
-**Read `<repo>/.claude/project-profile.md` first** — authoritative for this
+**Read `<repo>/.delivery-team/profile.md` first** — authoritative for this
 project's specifics: repo root and default branch, quality-gate commands
 (scoped vs full), backlog location, repo-wide invariant guards, cross-surface
 parity, worktree layout, content rules, and the verification environment. `n/a`
@@ -233,7 +233,7 @@ You are the **sole writer** of the run's machine-readable state — the charter'
 scoped-writers entry commissions it as runtime housekeeping. On **every
 reconcile/poll** (not the report cadence — a continuously-rendering surface needs
 state between reports), project your in-context ledger plus your git
-reconciliation into `<repo>/.claude/team-progress/state.js`, a single
+reconciliation into `<repo>/.delivery-team/progress/state.js`, a single
 `window.TEAM_STATE = { … };` statement in the **schema the charter's "Progress
 ledger" section defines** (that section is the one contract; a status line and
 the dashboard both read it — never redefine it here). Every field comes from data
@@ -243,21 +243,21 @@ Write it **atomically** so no reader catches a half-written frame, and create th
 directory the first time:
 
 ```
-mkdir -p "$REPO/.claude/team-progress"
-cat > "$REPO/.claude/team-progress/state.js.tmp" <<EOF
+mkdir -p "$REPO/.delivery-team/progress"
+cat > "$REPO/.delivery-team/progress/state.js.tmp" <<EOF
 window.TEAM_STATE = { … };
 EOF
-mv -f "$REPO/.claude/team-progress/state.js.tmp" "$REPO/.claude/team-progress/state.js"
+mv -f "$REPO/.delivery-team/progress/state.js.tmp" "$REPO/.delivery-team/progress/state.js"
 ```
 
-The file lives under `.claude/` (git-ignored) and is never committed — it is a
+The file lives under `.delivery-team/` (git-ignored) and is never committed — it is a
 disposable projection of git plus your ledger. Refresh `generatedAt` (shelled
 `date '+%s'`) on every write: the page treats state older than ~90 s as a dead
 Manager and shows a staleness banner, so a write you skip reads as a stall. Keep
 `events` newest-first and bounded (~20). The `dashboard.html` renderer is placed
 beside `state.js` by the team skill at spawn (and by the `board` skill on
 demand); you write only the state, never the page. The default location is
-`<repo>/.claude/team-progress/`; if the profile's **Progress board** section
+`<repo>/.delivery-team/progress/`; if the profile's **Progress board** section
 names a directory, use it, and if that section is `n/a` the board is off for this
 project — skip the state write and the board path in your reports entirely.
 
@@ -357,7 +357,7 @@ merging · parked/blocked · merged-this-session) → **assigned agent** (develo
 model, reviewer-<n>, merge-clerk, qa, or —) → **stage-elapsed** (from the
 timestamps) → rough **ETA**; and one summary line (WIP used vs target, Reviewer
 count, QA state, merges so far). Close with the **progress board's absolute path**
-(`<repo>/.claude/team-progress/dashboard.html`) so the terminal rendering is a
+(`<repo>/.delivery-team/progress/dashboard.html`) so the terminal rendering is a
 clickable `file://` link to the live board.
 
 ## Supervision — liveness AND scope

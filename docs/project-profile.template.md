@@ -1,6 +1,6 @@
 # Project profile — `<project name>`
 
-Copy this file to `<repo>/.claude/project-profile.md` and fill it in. The
+Copy this file to `<repo>/.delivery-team/profile.md` and fill it in. The
 global delivery machinery (the delivery-team plugin: its charter, skills,
 and agents) is **generic and identical for every project**; this file is the
 *only* place a project's own specifics live, and every agent reads it first
@@ -110,7 +110,7 @@ If a user-facing change must land on several clients/platforms to be complete:
 Paths the root/orchestrating instance may commit to directly on the main
 working tree — housekeeping writes that never go near a branch or a gate.
 
-- e.g. `docs/backlog/`, `scripts/qa/`, `.claude/`
+- e.g. `docs/backlog/`, `scripts/qa/`, `.delivery-team/`
 - `n/a` if nothing is written straight to the main tree here.
 
 This list does **not** enumerate direct-lane code paths: a direct-lane change
@@ -121,7 +121,7 @@ hold. So `n/a` here means "no housekeeping writes", never "no direct lane".
 
 ## Worktree layout
 
-- **Where worktrees are created:** e.g. `<repo>/.claude/worktrees/<name>/`
+- **Where worktrees are created:** e.g. `<repo>/.delivery-team/worktrees/<name>/`
 - **Branch naming:** e.g. `item/<slug>`
 - **Landing style:** e.g. fast-forward only, one commit per item.
 
@@ -131,9 +131,9 @@ The live browser board the Manager feeds while a run is in flight (see the
 charter's "Progress ledger" section). The Manager writes its machine-readable
 state to `state.js` here on every reconcile, the team skill copies the page in
 and opens it once per run, and `/delivery-team:board` reopens it on demand. All
-of it is runtime housekeeping under `.claude/` — git-ignored, never committed.
+of it is runtime housekeeping under `.delivery-team/` — git-ignored, never committed.
 
-- **Where the board lives:** the default is `<repo>/.claude/team-progress/`
+- **Where the board lives:** the default is `<repo>/.delivery-team/progress/`
   (`state.js` plus a copied `dashboard.html`). Name a different directory only if
   this project needs one.
 - `n/a` to turn the board off — the Manager then skips the state write and the

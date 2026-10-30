@@ -8,5 +8,7 @@
   "homepage": "https://github.com/dipeshc/spec-driven-delivery-team",
   "repository": "https://github.com/dipeshc/spec-driven-delivery-team",
   "license": "MIT",
+  "skills": ["./extras/claude/skills/"],
+  "workflows": ["./extras/claude/workflows/"],
   "keywords": ["agents", "multi-agent", "delivery", "backlog", "code-review", "worktrees", "docs-as-spec", "spec-driven"]
 }

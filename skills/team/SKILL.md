@@ -6,7 +6,7 @@ description: >
   and the QA), route work to the direct or team lane, file or delegate backlog
   items, relay the Manager's status reports, and watchdog the pipeline. Use when
   the user asks to run the team, work the backlog, or invokes /team. Works in
-  any repo that has a `.claude/project-profile.md`.
+  any repo that has a `.delivery-team/profile.md`.
 ---
 
 Launch and steward the delivery **team**. The root instance (you) stays thin:
@@ -21,7 +21,7 @@ own), the **QA** guards the default branch.
 
 ## Read these two files first
 
-1. **`<repo>/.claude/project-profile.md`** — the only place this project's
+1. **`<repo>/.delivery-team/profile.md`** — the only place this project's
    specifics live: repo root and default branch, quality-gate commands (scoped
    vs full), backlog location and conventions, repo-wide invariant guards,
    worktree layout and branch naming, sanctioned direct-write paths,
@@ -98,13 +98,13 @@ the zero-runtime board page exists beside where the Manager writes its state,
 then open it — shell only, no runtime, no network:
 
 ```
-mkdir -p "<repo>/.claude/team-progress"
-[ -f "<repo>/.claude/team-progress/dashboard.html" ] \
-  || cp "${CLAUDE_PLUGIN_ROOT}/assets/dashboard.html" "<repo>/.claude/team-progress/dashboard.html"
+mkdir -p "<repo>/.delivery-team/progress"
+[ -f "<repo>/.delivery-team/progress/dashboard.html" ] \
+  || cp "${CLAUDE_PLUGIN_ROOT}/assets/dashboard.html" "<repo>/.delivery-team/progress/dashboard.html"
 # open once, by platform; a headless host simply has nothing to open:
-open    "<repo>/.claude/team-progress/dashboard.html" 2>/dev/null \
-  || xdg-open "<repo>/.claude/team-progress/dashboard.html" 2>/dev/null \
-  || start "" "<repo>/.claude/team-progress/dashboard.html" 2>/dev/null || true
+open    "<repo>/.delivery-team/progress/dashboard.html" 2>/dev/null \
+  || xdg-open "<repo>/.delivery-team/progress/dashboard.html" 2>/dev/null \
+  || start "" "<repo>/.delivery-team/progress/dashboard.html" 2>/dev/null || true
 ```
 
 The page shows **"no run active"** until the Manager's first `state.js` write
@@ -279,7 +279,7 @@ default branch and branch-naming convention:
 > progress board's absolute path — and FIRST, before composing it, sweep for
 > team-agent payloads (READY/APPROVED/MERGED/CLOSED/BLOCKED) that arrived in
 > your conversation since the last beat and relay any unforwarded one to the
-> Manager now, per the relay duty's relay-before-narrating rule (`<repo>/.claude/team-progress/dashboard.html`,
+> Manager now, per the relay duty's relay-before-narrating rule (`<repo>/.delivery-team/progress/dashboard.html`,
 > a clickable `file://` link to the live board). Never a bare "it's quiet". (4)
 > If the backlog is DRAINED and the default branch is
 > idle: tell the user the run is complete and `CronDelete` this heartbeat (find

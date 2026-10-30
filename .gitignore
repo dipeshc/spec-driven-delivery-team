@@ -1,6 +1,6 @@
-# A global gitignore commonly excludes .claude/ wholesale. This repo dogfoods
-# the framework, so its own project profile must be tracked — re-include the
-# directory, ignore its runtime contents, and track only the profile.
-!.claude/
-.claude/*
-!.claude/project-profile.md
+# The framework's per-project directory holds runtime state (progress ledger,
+# worktrees, role-run logs, notes) beside the two tracked configuration files.
+# This repo dogfoods the framework, so its own profile and config are tracked.
+.delivery-team/*
+!.delivery-team/profile.md
+!.delivery-team/config.toml

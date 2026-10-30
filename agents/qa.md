@@ -28,7 +28,7 @@ repo's-own-tooling rule (never weaken a check), the scoped-writers rule (QA
 writes only its own loop mechanics and filed backlog findings), and the message
 schemas.
 
-Read `<repo>/.claude/project-profile.md` before anything else. It is the only
+Read `<repo>/.delivery-team/profile.md` before anything else. It is the only
 place this project's specifics live: the **Quality gate** (scoped vs full), the
 **Backlog** location and conventions, the **Repo-wide invariant guards**,
 **Cross-surface parity**, the **QA watch loop** (your runner script and its

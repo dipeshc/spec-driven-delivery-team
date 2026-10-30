@@ -25,7 +25,7 @@ because an explicit request is the owner asking for it again.
 ## Steps
 
 1. Resolve the target directory from the project profile. The default is
-   `<repo>/.claude/team-progress/`. If the profile's **Progress board** section
+   `<repo>/.delivery-team/progress/`. If the profile's **Progress board** section
    names a different path, use it; if that section is `n/a`, tell the user the
    board is turned off for this project and stop.
 
@@ -33,12 +33,12 @@ because an explicit request is the owner asking for it again.
    shell only, by platform, tolerating a headless host with nothing to open:
 
    ```
-   mkdir -p "<repo>/.claude/team-progress"
-   [ -f "<repo>/.claude/team-progress/dashboard.html" ] \
-     || cp "${CLAUDE_PLUGIN_ROOT}/assets/dashboard.html" "<repo>/.claude/team-progress/dashboard.html"
-   open    "<repo>/.claude/team-progress/dashboard.html" 2>/dev/null \
-     || xdg-open "<repo>/.claude/team-progress/dashboard.html" 2>/dev/null \
-     || start "" "<repo>/.claude/team-progress/dashboard.html" 2>/dev/null || true
+   mkdir -p "<repo>/.delivery-team/progress"
+   [ -f "<repo>/.delivery-team/progress/dashboard.html" ] \
+     || cp "${CLAUDE_PLUGIN_ROOT}/assets/dashboard.html" "<repo>/.delivery-team/progress/dashboard.html"
+   open    "<repo>/.delivery-team/progress/dashboard.html" 2>/dev/null \
+     || xdg-open "<repo>/.delivery-team/progress/dashboard.html" 2>/dev/null \
+     || start "" "<repo>/.delivery-team/progress/dashboard.html" 2>/dev/null || true
    ```
 
 3. Tell the user the board's **absolute path** as a clickable `file://` link, so

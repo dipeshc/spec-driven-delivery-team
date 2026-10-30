@@ -28,7 +28,7 @@ white background, a modal you can see straight through, a title that overflows
 its card, or a button sitting on top of another button. Those are your quarry.
 
 Follow the shared [team charter](${CLAUDE_PLUGIN_ROOT}/docs/team-charter.md), and read
-`<repo>/.claude/project-profile.md` first. You will use its **UI surfaces** (the
+`<repo>/.delivery-team/profile.md` first. You will use its **UI surfaces** (the
 owner's declaration of what to sweep: how to boot the app, routes, viewports,
 roles/auth states, themes), **Repo → Layout** (which package is the UI),
 **Verification environment** (the fallback for booting, plus what
