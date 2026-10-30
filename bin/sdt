@@ -1881,6 +1881,91 @@ def cmd_paths(args: argparse.Namespace) -> int:
     return 0
 
 
+HARNESSES: dict[str, tuple[str, str]] = {
+    # harness -> (project skills directory, instruction file it reads)
+    "claude": (".claude/skills", "CLAUDE.md"),
+    "codex": (".agents/skills", "AGENTS.md"),
+    "gemini": (".agents/skills", "GEMINI.md"),
+    "cursor": (".agents/skills", "AGENTS.md"),
+    "opencode": (".agents/skills", "AGENTS.md"),
+    "copilot": (".agents/skills", "AGENTS.md"),
+}
+INSTALL_MARKER = "<!-- spec-driven-delivery-team -->"
+
+
+def instruction_snippet(root: Path) -> str:
+    return (
+        f"{INSTALL_MARKER}\n"
+        "## Delivery team\n\n"
+        "This project is worked by the spec-driven delivery team. Before changing anything here, read\n"
+        "`.delivery-team/profile.md`; the orchestrator is `sdt` (`" + str(FRAMEWORK_ROOT / "bin" / "sdt") + "`;\n"
+        "`sdt paths` names the charter and roles). The `team`, `board` and `consistency-check` skills\n"
+        "describe how to run the backlog, open the progress board and audit the spec; a small, single-area\n"
+        "change takes the direct lane in your session, everything riskier is filed as a backlog item for\n"
+        "`sdt run`.\n"
+    )
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    """Link the skills into a harness's project directory and print its instruction-file snippet."""
+    root = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()))
+    harnesses = list(HARNESSES) if args.harness == "all" else [args.harness]
+    linked: list[str] = []
+    for harness in harnesses:
+        skills_dir, _ = HARNESSES[harness]
+        target = root / skills_dir
+        target.mkdir(parents=True, exist_ok=True)
+        for skill in sorted((FRAMEWORK_ROOT / "skills").iterdir()):
+            if not (skill / "SKILL.md").is_file():
+                continue
+            link = target / skill.name
+            if link.is_symlink():
+                if link.resolve() != skill.resolve():
+                    link.unlink()
+                    link.symlink_to(skill)
+            elif link.exists():
+                print(f"skip {link}: exists and is not a symlink")
+                continue
+            else:
+                link.symlink_to(skill)
+            linked.append(str(link.relative_to(root)))
+    print("linked: " + (", ".join(sorted(set(linked))) or "nothing"))
+    if args.bin_dir:
+        bin_dir = Path(args.bin_dir).expanduser()
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        link = bin_dir / "sdt"
+        if link.is_symlink() or not link.exists():
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(FRAMEWORK_ROOT / "bin" / "sdt")
+            print(f"linked: {link} -> {FRAMEWORK_ROOT / 'bin' / 'sdt'}")
+        else:
+            print(f"skip {link}: exists and is not a symlink")
+    else:
+        print(f"hint: put {FRAMEWORK_ROOT / 'bin'} on PATH, or rerun with --bin-dir ~/.local/bin")
+    snippet = instruction_snippet(root)
+    for harness in harnesses:
+        _, instructions = HARNESSES[harness]
+        path = root / instructions
+        existing = path.read_text() if path.is_file() else ""
+        if INSTALL_MARKER in existing:
+            print(f"{instructions}: snippet already present")
+            continue
+        if args.write:
+            with open(path, "a") as fh:
+                fh.write(
+                    ("\n" if existing and not existing.endswith("\n") else "") + ("\n" if existing else "") + snippet
+                )
+            print(f"{instructions}: snippet appended")
+        else:
+            print(f"\nAdd this to {instructions} (or rerun with --write):\n\n{snippet}")
+    print(
+        "\nIf the skill links should not be committed, ignore them: "
+        + ", ".join(sorted({HARNESSES[h][0] for h in harnesses}))
+    )
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     project = Project(Path.cwd(), [Path(d) for d in args.adapter_dir])
     engine = args.engine or project.cfg.engine_default
@@ -2014,6 +2099,12 @@ def main(argv: list[str] | None = None) -> int:
     common(p)
     p.add_argument("--refresh", action="store_true", help="recopy the page from the framework")
     p.set_defaults(fn=cmd_board)
+    p = sub.add_parser("install", help="link the skills into a harness's project directory")
+    common(p)
+    p.add_argument("--harness", required=True, choices=[*HARNESSES, "all"])
+    p.add_argument("--write", action="store_true", help="append the instruction-file snippet instead of printing it")
+    p.add_argument("--bin-dir", help="directory to symlink the sdt command into (e.g. ~/.local/bin)")
+    p.set_defaults(fn=cmd_install)
     p = sub.add_parser("role", help="run one role ad hoc with a JSON payload")
     common(p)
     p.add_argument("name")

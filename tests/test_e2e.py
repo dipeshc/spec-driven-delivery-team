@@ -169,3 +169,23 @@ def test_paths(repo: Path) -> None:
     proc = run_sdt(repo, "paths")
     assert proc.returncode == 0
     assert "charter:" in proc.stdout and "team-charter.md" in proc.stdout
+
+
+def test_install_links_skills_and_snippet(repo: Path) -> None:
+    proc = run_sdt(repo, "install", "--harness", "codex")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    link = repo / ".agents" / "skills" / "team"
+    assert link.is_symlink() and (link / "SKILL.md").is_file()
+    assert "Add this to AGENTS.md" in proc.stdout
+    assert not (repo / "AGENTS.md").exists()
+
+    proc = run_sdt(repo, "install", "--harness", "codex", "--write")
+    assert proc.returncode == 0
+    text = (repo / "AGENTS.md").read_text()
+    assert text.count("## Delivery team") == 1
+    proc = run_sdt(repo, "install", "--harness", "codex", "--write")
+    assert "already present" in proc.stdout
+    assert (repo / "AGENTS.md").read_text() == text
+
+    proc = run_sdt(repo, "install", "--harness", "claude")
+    assert (repo / ".claude" / "skills" / "board").is_symlink()
