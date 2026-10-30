@@ -1,0 +1,27 @@
+# Engine adapter: Cursor CLI (`agent`). Best-effort, UNTESTED: flags are taken
+# from Cursor's CLI reference (headless `agent -p`, `--force` to apply edits,
+# `--model`, `--workspace`) and have not been exercised by the framework's
+# maintainers. `sdt doctor` reports this adapter as untested.
+#
+# Cursor documents no stdin prompt and no extra-directory grant, so the prompt
+# is passed as the last argument and only the working directory is granted; a
+# worktree's `.git` file points into the main repository, which may need the
+# repository added as a trusted workspace. Output is plain text so the final
+# fenced JSON block is read straight from stdout.
+name = "cursor"
+tested = false
+network = true
+vision = false
+
+command = ["agent", "-p", "--force", "--output-format", "text", "--workspace", "{cwd}"]
+model_args = ["--model", "{model}"]
+add_dir = { flag = "", style = "repeat" }
+prompt = "arg"
+stdin_args = []
+output = "text"
+timeout_exit_codes = []
+
+[tiers]
+frontier = ""
+mid = ""
+small = ""

@@ -1,0 +1,27 @@
+# Engine adapter: OpenCode (`opencode run`). Best-effort, UNTESTED: flags are
+# taken from OpenCode's CLI documentation (`run` for a one-shot prompt,
+# `--auto` to approve asks, `-m provider/model`, `--dir`) and have not been
+# exercised by the framework's maintainers. `sdt doctor` reports this adapter
+# as untested.
+#
+# OpenCode's model names are `provider/model`; set [engine.tiers] in
+# config.toml. No extra-directory grant is documented, so only the working
+# directory is granted. Output is plain text so the final fenced JSON block is
+# read straight from stdout.
+name = "opencode"
+tested = false
+network = true
+vision = false
+
+command = ["opencode", "run", "--auto", "--dir", "{cwd}"]
+model_args = ["-m", "{model}"]
+add_dir = { flag = "", style = "repeat" }
+prompt = "arg"
+stdin_args = []
+output = "text"
+timeout_exit_codes = []
+
+[tiers]
+frontier = ""
+mid = ""
+small = ""

@@ -1,0 +1,27 @@
+# Engine adapter: GitHub Copilot CLI (`copilot -p`). Best-effort, UNTESTED:
+# flags are taken from the Copilot CLI programmatic reference (`-p` for a
+# one-shot prompt, `--allow-all` because an unflagged approval is denied in
+# that mode, `-C` for the working directory, `--add-dir` for extra
+# directories, `--model`) and have not been exercised by the framework's
+# maintainers. `sdt doctor` reports this adapter as untested.
+#
+# Copilot ignores stdin when `-p` is given, so the prompt is passed as the
+# last argument. Output is plain text so the final fenced JSON block is read
+# straight from stdout.
+name = "copilot"
+tested = false
+network = true
+vision = false
+
+command = ["copilot", "-p", "--allow-all", "-C", "{cwd}"]
+model_args = ["--model", "{model}"]
+add_dir = { flag = "--add-dir", style = "repeat" }
+prompt = "arg"
+stdin_args = []
+output = "text"
+timeout_exit_codes = []
+
+[tiers]
+frontier = ""
+mid = ""
+small = ""

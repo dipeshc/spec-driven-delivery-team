@@ -42,11 +42,18 @@ def test_config_missing(sdt: ModuleType, tmp_path: Path) -> None:
 # ---- adapters
 
 
-@pytest.mark.parametrize("name", ["claude", "codex", "gemini"])
-def test_shipped_adapters_load(sdt: ModuleType, name: str) -> None:
+@pytest.mark.parametrize("name", sorted(p.stem for p in (ROOT / "adapters").glob("*.toml")))
+def test_shipped_adapters_load(sdt: ModuleType, name: str, tmp_path: Path) -> None:
     adapter = sdt.load_adapter(name, [ROOT / "adapters"])
     assert adapter.name == name
     assert adapter.command
+    assert adapter.tested == (name in {"claude", "gemini"}), "only engines exercised for real are marked tested"
+    prompt = tmp_path / "p"
+    prompt.write_text("PROMPT")
+    argv = adapter.render(model="m", cwd=tmp_path, add_dirs=[Path("/g")], out=tmp_path / "o", prompt_file=prompt)
+    assert argv[0] == adapter.executable
+    if adapter.prompt == "arg":
+        assert argv[-1] == "PROMPT"
 
 
 def test_render_claude(sdt: ModuleType, tmp_path: Path) -> None:
