@@ -23,7 +23,7 @@ Its spec is the documents under `docs/`.
 |---|---|
 | `docs/architecture.md` | This file — the design spec and entry doc for the repo. |
 | `docs/team-charter.md` | The shared behavioural spec every team agent implements. Agent files reference it rather than restating it; a role-specific twist lives in the role's own file. |
-| `docs/project-profile.template.md` | A shipped artifact for consuming projects: the prose half of a project's configuration. Its section contents describe *consumers*, not this repo — the consistency check audits its structure (references, terminology), never treats its example values as claims about this repo. |
+| `docs/profile.template.md` | A shipped artifact for consuming projects: the prose half of a project's configuration. Its section contents describe *consumers*, not this repo — the consistency check audits its structure (references, terminology), never treats its example values as claims about this repo. |
 | `docs/config.template.toml` | The machine-read half: every key `bin/sdt` consumes, with its default. Shipped to consumers by `sdt init`. |
 | `docs/backlog/` | This repo's own backlog: one file per item, priority in the filename, deleted by the merging commit. |
 | `README.md` | The public front door. It summarizes this spec and must never contradict it. |
@@ -108,5 +108,7 @@ docs-as-spec with `docs/` as the docs root, and work is filed into
 `docs/backlog/`. A change that alters behaviour specified here — a role's
 responsibilities, an invariant, a message flow — updates this document (and the
 charter where the rule is shared) in the same commit. The `consistency-check`
-skill is the audit: phase 1 checks these documents against each other, phase 2
-checks the agent and skill definitions against them.
+role is the audit: phase 1 checks these documents against each other, phase 2
+checks the orchestrator, role, adapter and skill definitions against them, and
+the tests under `tests/` pin the orchestrator's behaviour to what the charter
+says.

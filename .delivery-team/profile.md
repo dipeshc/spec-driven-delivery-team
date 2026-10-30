@@ -25,7 +25,7 @@ working on *this* repository.
   - `extras/claude/` — Claude-only surfaces: the statusline skill and script,
     and `workflows/consistency-sweep.js`, the parallel spec audit.
   - `docs/` — the spec: `architecture.md` (entry doc), `team-charter.md`,
-    `project-profile.template.md`, and `backlog/`.
+    `profile.template.md`, `config.template.toml`, and `backlog/`.
 
 ## Quality gate
 
@@ -58,7 +58,7 @@ working on *this* repository.
   `extras/claude/` implement them. A mismatch means
   the implementing file is wrong —
   unless the change is a deliberate re-decision, which is an owner call and
-  updates the spec first. `docs/project-profile.template.md` is a shipped
+  updates the spec first. `docs/profile.template.md` is a shipped
   artifact whose example values describe consuming projects, not this repo.
 - **Docs root:** `docs/`
 - **Decision records:** n/a
