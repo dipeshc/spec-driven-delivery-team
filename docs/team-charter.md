@@ -310,9 +310,25 @@ window.TEAM_STATE = {
       head:   "1ba9449c",           // branch tip sha (any length; the page shortens)
       stageEnteredAt: 1723644644,   // epoch seconds the item entered its current stage
       grouped: ["sibling-slug"],    // optional: other slugs landing in this commit
-      note: "awaits X"              // optional: short reason, chiefly for blocked
+      note: "awaits X",             // optional: short reason, chiefly for blocked
+      eta: 1723648800,              // optional: epoch seconds the item is expected to
+                                    //   land (a number), or a short text such as
+                                    //   "after nav lands"; absent = unknown
+      dependsOn: ["other-slug"],    // optional: slugs this item waits on
+      detail: "multi-line text",    // optional: what the assignee is doing now, the
+                                    //   last finding, the verification counts — the
+                                    //   text a reader gets when they open the item
+      checks: [                     // optional: the gates run so far on this branch
+        { name: "client typecheck", status: "pass" },   // pass | fail | running | pending
+        { name: "tvOS focus suite", status: "running", text: "nav group" }
+      ],
+      history: [                    // optional, oldest first: stage transitions
+        { at: 1723644000, stage: "implementing", text: "dispatched to developer-nav" }
+      ]
     }
   ],
+  eta: 1723656000,                  // optional: epoch seconds the whole run is expected
+                                    //   to drain, or short text; absent = unknown
   agents: [                         // one row per known role
     { role: "Manager", state: "reconciling", lastSignalAt: 1723645160 }
     // state is free human text; lastSignalAt is epoch seconds of the last real
@@ -330,6 +346,13 @@ window.TEAM_STATE = {
   ]
 };
 ```
+
+The optional per-item `eta`, `dependsOn`, `detail`, `checks` and `history`
+fields, and the run-level `eta`, were added 2026-09-25 so a board can open an
+item and answer "what is happening to this one and when does it land" without
+the reader asking the Manager; the Manager fills them from the same ledger its
+report table is built from (the ETA column, the stage-elapsed column, the
+verification counts it quotes) and leaves any it cannot fill absent.
 
 The `stage` enum is the load-bearing field: it is what a board groups into
 lifecycle columns and what a status line aggregates into counts, so it is the

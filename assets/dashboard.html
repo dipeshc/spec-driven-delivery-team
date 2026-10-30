@@ -3,427 +3,1166 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Delivery Team — Mission Control</title>
+<title>Delivery board</title>
 <!--
-  Zero-runtime progress board for the delivery-team framework.
-  Self-contained: no server, no build, no network, no external assets. Opened
-  over file:// beside a sibling state.js that a running Manager rewrites every
-  reconcile. This page is a renderer, never a source of truth — delete it and
-  nothing about a run changes.
+  Progress board for the delivery-team framework.
+
+  Self-contained: no server, no build, no network, no external assets, system
+  fonts only. Opened over file:// beside a sibling state.js that the run's
+  Manager rewrites on every reconcile. This page is a renderer, never a source
+  of truth: delete it and nothing about a run changes.
 
   It reloads state by RE-INJECTING <script src="state.js?t=<now>"> on a short
   timer. fetch() is deliberately avoided: browsers block cross-origin reads on
   file://, but a script tag is exempt, and the changing ?t= query defeats the
   disk cache so each poll reads the file's current bytes. state.js assigns
-  window.TEAM_STATE = {…}; the schema is the charter's "Progress ledger" section.
+  window.TEAM_STATE = {...}; the schema is the charter's "Progress ledger"
+  section. Every field is optional: an older or partial writer must never make
+  this page error, so absent fields are simply not shown.
+
+  Reading order is the owner's question order: is the run healthy and is the
+  team alive, when will it finish, what is blocked, what is each item doing,
+  what just happened. The team line is the health card's footer: one sentence
+  of liveness counts that names any silent agent, expanding on demand to the
+  per-agent rows (the open/closed choice is remembered). Click (or focus +
+  Enter) any item to open its details; the open item lives in the URL hash so
+  a reload keeps it open.
 -->
 <style>
   :root{
-    --paper:#F6F7F4; --ink:#1B1E1C; --ink-2:#5A625C; --line:#DDE2DB; --card:#FFFFFF;
-    --accent:#2F7E78; --accent-ink:#FFFFFF;
-    --impl:#3D6FA8; --review:#B8860B; --landing:#7A68B8; --done:#3E8E58; --blocked:#BC4238;
-    --impl-bg:#EAF1F8; --review-bg:#F8F1DE; --landing-bg:#EFECF8; --done-bg:#E8F3EC; --blocked-bg:#F8E9E7; --idle-bg:#EEF0ED;
-    --term:#14171A; --term-ink:#D8DED9; --warn:#B8860B; --warn-bg:#F8F1DE;
+    color-scheme: light;
+    --bg:#F4F5F2; --surface:#FFFFFF; --surface-2:#ECEEEA; --border:#D6DBD4;
+    --text:#1B1E1C; --muted:#5A625C; --accent:#1F6F69; --focus:#1F6F69;
+    --shadow: 0 8px 24px rgba(20,24,20,.16), 0 2px 6px rgba(20,24,20,.10);
+    --backdrop: rgba(20,24,20,.45);
+
+    --queued-ink:#5A625C;  --queued-mark:#9AA39C;  --queued-tint:#ECEEEA;
+    --impl-ink:#2B5D93;    --impl-mark:#3F79BC;    --impl-tint:#E6EEF8;
+    --review-ink:#82600A;  --review-mark:#B4830C;  --review-tint:#F8EFD6;
+    --landing-ink:#5E4BA5; --landing-mark:#7C69C6; --landing-tint:#ECE8F8;
+    --done-ink:#2A7343;    --done-mark:#3E9A5C;    --done-tint:#E3F1E7;
+    --blocked-ink:#AF352D; --blocked-mark:#D24E44; --blocked-tint:#F9E6E4;
   }
-  @media (prefers-color-scheme: dark){:root{
-    --paper:#151815; --ink:#E8EAE6; --ink-2:#9AA39C; --line:#2A2F2B; --card:#1D211E;
-    --accent:#4FA69F;
-    --impl:#7FA9D8; --review:#D4A83C; --landing:#A395DC; --done:#6FBB8A; --blocked:#D8756B;
-    --impl-bg:#1C2530; --review-bg:#2C2515; --landing-bg:#252031; --done-bg:#1A2A20; --blocked-bg:#301D1B; --idle-bg:#222623;
-    --term:#0E1112; --term-ink:#C9D1CB; --warn:#D4A83C; --warn-bg:#2C2515;
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#131513; --surface:#1C1F1D; --surface-2:#242826; --border:#323732;
+    --text:#E7E9E5; --muted:#A3ABA4; --accent:#6CC4BC; --focus:#6CC4BC;
+    --shadow: 0 12px 32px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+    --backdrop: rgba(0,0,0,.6);
+    --queued-ink:#A3ABA4;  --queued-mark:#6F7871;  --queued-tint:#242826;
+    --impl-ink:#93B9E4;    --impl-mark:#4F8DD6;    --impl-tint:#1B2735;
+    --review-ink:#E0B14C;  --review-mark:#B8871A;  --review-tint:#2C2515;
+    --landing-ink:#B7A9E8; --landing-mark:#957FE0; --landing-tint:#262035;
+    --done-ink:#86C99A;    --done-mark:#4A9A63;    --done-tint:#1A2C21;
+    --blocked-ink:#EB958B; --blocked-mark:#DA6C61; --blocked-tint:#33201E;
   }}
   :root[data-theme="dark"]{
-    --paper:#151815; --ink:#E8EAE6; --ink-2:#9AA39C; --line:#2A2F2B; --card:#1D211E;
-    --accent:#4FA69F;
-    --impl:#7FA9D8; --review:#D4A83C; --landing:#A395DC; --done:#6FBB8A; --blocked:#D8756B;
-    --impl-bg:#1C2530; --review-bg:#2C2515; --landing-bg:#252031; --done-bg:#1A2A20; --blocked-bg:#301D1B; --idle-bg:#222623;
-    --term:#0E1112; --term-ink:#C9D1CB; --warn:#D4A83C; --warn-bg:#2C2515;
+    color-scheme: dark;
+    --bg:#131513; --surface:#1C1F1D; --surface-2:#242826; --border:#323732;
+    --text:#E7E9E5; --muted:#A3ABA4; --accent:#6CC4BC; --focus:#6CC4BC;
+    --shadow: 0 12px 32px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+    --backdrop: rgba(0,0,0,.6);
+    --queued-ink:#A3ABA4;  --queued-mark:#6F7871;  --queued-tint:#242826;
+    --impl-ink:#93B9E4;    --impl-mark:#4F8DD6;    --impl-tint:#1B2735;
+    --review-ink:#E0B14C;  --review-mark:#B8871A;  --review-tint:#2C2515;
+    --landing-ink:#B7A9E8; --landing-mark:#957FE0; --landing-tint:#262035;
+    --done-ink:#86C99A;    --done-mark:#4A9A63;    --done-tint:#1A2C21;
+    --blocked-ink:#EB958B; --blocked-mark:#DA6C61; --blocked-tint:#33201E;
   }
-  :root[data-theme="light"]{
-    --paper:#F6F7F4; --ink:#1B1E1C; --ink-2:#5A625C; --line:#DDE2DB; --card:#FFFFFF;
-    --accent:#2F7E78;
-    --impl:#3D6FA8; --review:#B8860B; --landing:#7A68B8; --done:#3E8E58; --blocked:#BC4238;
-    --impl-bg:#EAF1F8; --review-bg:#F8F1DE; --landing-bg:#EFECF8; --done-bg:#E8F3EC; --blocked-bg:#F8E9E7; --idle-bg:#EEF0ED;
-    --term:#14171A; --term-ink:#D8DED9; --warn:#B8860B; --warn-bg:#F8F1DE;
-  }
+
+  /* Stage roles: any element with .st-<stage> resolves the three stage tokens. */
+  .st-queued{--st-ink:var(--queued-ink);--st-mark:var(--queued-mark);--st-tint:var(--queued-tint)}
+  .st-implementing{--st-ink:var(--impl-ink);--st-mark:var(--impl-mark);--st-tint:var(--impl-tint)}
+  .st-review{--st-ink:var(--review-ink);--st-mark:var(--review-mark);--st-tint:var(--review-tint)}
+  .st-landing{--st-ink:var(--landing-ink);--st-mark:var(--landing-mark);--st-tint:var(--landing-tint)}
+  .st-done{--st-ink:var(--done-ink);--st-mark:var(--done-mark);--st-tint:var(--done-tint)}
+  .st-blocked{--st-ink:var(--blocked-ink);--st-mark:var(--blocked-mark);--st-tint:var(--blocked-tint)}
+  .st-none{--st-ink:var(--muted);--st-mark:var(--border);--st-tint:var(--surface-2)}
+
   *{box-sizing:border-box}
-  body{background:var(--paper);color:var(--ink);font-family:"Avenir Next","Helvetica Neue",system-ui,sans-serif;
-    margin:0;padding:24px max(20px,4vw) 60px;line-height:1.45;}
-  .mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums;}
-  h1{font-size:1.3rem;font-weight:600;margin:0;letter-spacing:-.01em}
-  .eyebrow{font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);font-weight:600}
-  header.page{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:20px}
-  header.page .args{font-size:.72rem;color:var(--ink-2)}
-  .controls{display:flex;gap:10px;align-items:center}
-  button.theme{font:inherit;font-size:.72rem;color:var(--ink-2);background:var(--card);border:1px solid var(--line);
-    border-radius:4px;padding:4px 10px;cursor:pointer}
-  button.theme:hover{border-color:var(--accent);color:var(--accent)}
-  section{margin-bottom:22px}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow-wrap:anywhere;
+  }
+  [hidden]{display:none !important}
+  .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric:tabular-nums}
+  .num{font-variant-numeric:tabular-nums}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  a{color:var(--accent)}
+  :focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+  button{font:inherit;color:inherit}
+  h1,h2,h3,p,ul,ol,dl{margin:0}
+  ul,ol{padding:0;list-style:none}
 
-  /* banners */
-  .banner{border-radius:6px;padding:10px 16px;margin-bottom:16px;font-size:.82rem;display:flex;gap:10px;align-items:baseline}
-  .banner.stale{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn)}
-  .banner.blocked{background:var(--blocked-bg);color:var(--blocked);border:1px solid var(--blocked)}
-  .banner b{font-weight:700}
-  .hidden{display:none !important}
+  .wrap{max-width:1280px;margin:0 auto;padding:16px 16px 48px}
+  @media (min-width:900px){.wrap{padding:24px 32px 64px}}
 
-  /* summary bar */
-  .summary{display:flex;gap:26px;align-items:center;flex-wrap:wrap;background:var(--card);
-    border:1px solid var(--line);border-radius:6px;padding:14px 20px;margin-bottom:14px}
-  .summary .big{font-size:1.5rem;font-weight:600}
-  .stat{display:flex;flex-direction:column;gap:2px}
-  .stat .eyebrow{font-size:.62rem}
-  .bar{flex:1 1 220px;min-width:180px;height:10px;border-radius:5px;background:var(--idle-bg);overflow:hidden;display:flex}
-  .bar i{display:block;height:100%}
-  .legend{display:flex;gap:14px;font-size:.72rem;color:var(--ink-2);flex-wrap:wrap;margin-top:4px}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:1px}
+  /* ---- header ---- */
+  .top{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-start;justify-content:space-between;margin-bottom:16px}
+  .eyebrow{font-size:.8125rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  h1{font-size:1.375rem;line-height:1.3;font-weight:600;letter-spacing:-.01em}
+  .args{font-size:.875rem;color:var(--muted);max-width:75ch;margin-top:4px}
+  .top-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .fresh{display:inline-flex;align-items:center;gap:8px;font-size:.875rem;color:var(--muted);min-height:44px}
+  .fresh.is-stale{color:var(--review-ink)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.live{background:var(--done-mark)} .dot.quiet{background:var(--review-mark)}
+  .dot.silent{background:var(--blocked-mark)} .dot.idle{background:var(--queued-mark)}
+  .btn{
+    min-height:44px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);
+    color:var(--text);cursor:pointer;font-size:.875rem;font-weight:500;
+  }
+  @media (hover:hover){.btn:hover{border-color:var(--accent);color:var(--accent)}}
 
-  /* board */
-  .board{display:grid;grid-template-columns:repeat(5,minmax(180px,1fr));gap:12px;overflow-x:auto}
-  .col{background:var(--card);border:1px solid var(--line);border-radius:6px;min-width:180px;display:flex;flex-direction:column}
-  .col h3{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:600;margin:0;
-    padding:10px 12px;border-bottom:2px solid var(--cc,var(--line));color:var(--cc,var(--ink-2));display:flex;justify-content:space-between}
-  .col .cards{padding:10px;display:flex;flex-direction:column;gap:10px;min-height:70px}
-  .card{border:1px solid var(--line);border-left:3px solid var(--cc,var(--line));border-radius:4px;padding:9px 11px;background:var(--paper)}
-  .card.isblocked{border-left-color:var(--blocked)}
-  .card .slug{font-size:.8rem;font-weight:600;line-height:1.3;word-break:break-word}
-  .card .meta{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:.7rem;color:var(--ink-2)}
-  .chip{font-size:.62rem;font-weight:700;border-radius:3px;padding:1px 5px;background:var(--cc-bg,var(--idle-bg));color:var(--cc,var(--ink-2))}
-  .chip.blocked{background:var(--blocked-bg);color:var(--blocked)}
-  .empty{font-size:.72rem;color:var(--ink-2);font-style:italic;padding:4px 2px}
-  .grouped{margin-top:6px;font-size:.68rem;color:var(--ink-2);word-break:break-word}
+  /* ---- health strip ---- */
+  .health{
+    display:grid;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;
+    grid-template-columns:1fr 1fr;
+    grid-template-areas:"status eta" "progress progress" "elapsed main" "team team";
+  }
+  .cell{padding:16px;display:flex;flex-direction:column;gap:4px;min-width:0}
+  .cell.status{grid-area:status} .cell.eta{grid-area:eta} .cell.progress{grid-area:progress}
+  .cell.elapsed{grid-area:elapsed} .cell.main{grid-area:main}
+  .cell.eta,.cell.main{border-left:1px solid var(--border)}
+  .cell.progress,.cell.elapsed,.cell.main{border-top:1px solid var(--border)}
+  @media (min-width:860px){
+    .health{grid-template-columns:1.1fr 1.8fr 1.1fr 1fr 1fr;grid-template-areas:"status progress eta elapsed main" "team team team team team"}
+    .cell{padding:16px 20px}
+    .cell.progress,.cell.elapsed,.cell.main{border-top:0}
+    .cell + .cell{border-left:1px solid var(--border)}
+  }
 
-  /* lower grid */
-  .lower{display:grid;grid-template-columns:minmax(260px,320px) 1fr;gap:12px;margin-top:14px}
-  @media (max-width:800px){.lower{grid-template-columns:1fr}.board{grid-template-columns:repeat(5,180px)}}
-  .panel{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:14px 16px}
-  .panel h3{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);margin:0 0 10px;font-weight:600}
-  .agent{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:.8rem}
-  .agent:first-of-type{border-top:0}
-  .agent .who{font-weight:600}
-  .agent .what{color:var(--ink-2);font-size:.72rem;text-align:right}
-  .feed{display:flex;flex-direction:column;gap:0}
-  .ev{display:grid;grid-template-columns:58px 92px 1fr;gap:12px;padding:7px 0;border-top:1px solid var(--line);
-    font-size:.76rem;align-items:baseline}
-  .ev:first-of-type{border-top:0}
-  .ev .t{color:var(--ink-2)}
-  .ev .k{font-weight:700;font-size:.66rem;letter-spacing:.05em}
-  footer{margin-top:30px;font-size:.72rem;color:var(--ink-2);max-width:74ch}
-  footer .mono{font-size:.68rem}
+  /* ---- team line: the health card's footer, a disclosure over the agent rows ---- */
+  .team{grid-area:team;border-top:1px solid var(--border);min-width:0}
+  .team > summary{
+    list-style:none;display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px 12px;
+    min-height:44px;padding:12px 16px;cursor:pointer;font-size:.875rem;line-height:1.5;color:var(--muted);
+  }
+  .team > summary::-webkit-details-marker{display:none}
+  .team > summary:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;border-radius:0}
+  @media (hover:hover){.team > summary:hover{background:var(--surface-2)}}
+  @media (min-width:860px){.team > summary{padding:12px 20px}}
+  /* Lead and toggle centre on the first text line, so a wrapped line keeps them on the top row. */
+  .team-lead{display:inline-flex;align-items:center;gap:8px;flex:none;min-height:1.5em}
+  .team-line{flex:1 1 240px;min-width:0;color:var(--text)}
+  .team-line .sep{color:var(--muted)}
+  .team-line .silent{color:var(--blocked-ink);font-weight:600}
+  .team-toggle{flex:none;margin-left:auto;color:var(--accent);font-weight:500;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;min-height:1.5em}
+  .team-toggle::after{content:"\25BE";font-size:.75rem;line-height:1;transition:transform 150ms ease-out}
+  .team[open] .team-toggle::after{transform:rotate(180deg)}
+  .team-toggle .hide{display:none}
+  .team[open] .team-toggle .show{display:none}
+  .team[open] .team-toggle .hide{display:inline}
+  @media (prefers-reduced-motion: reduce){.team-toggle::after{transition:none}}
 
-  /* no-run empty state */
-  #norun{text-align:center;padding:80px 20px;color:var(--ink-2)}
-  #norun .big{font-size:1.1rem;color:var(--ink);font-weight:600;margin-bottom:8px}
-  #norun .mono{font-size:.72rem}
+  .agents{display:grid;grid-template-columns:1fr}
+  @media (min-width:600px){.agents{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}}
+  .agent{display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"dot name signal" ". state state";gap:2px 10px;padding:12px 16px;border-top:1px solid var(--border);align-items:baseline;min-width:0}
+  @media (min-width:860px){.agent{padding:12px 20px}}
+  .agent .dot{grid-area:dot;align-self:center;position:relative;top:1px}
+  .agent .name{grid-area:name;font-weight:600;font-size:.9375rem}
+  .agent .signal{grid-area:signal;font-size:.8125rem;color:var(--muted);white-space:nowrap}
+  .agent .signal.is-silent{color:var(--blocked-ink);font-weight:600}
+  .agent .state{grid-area:state;font-size:.875rem;color:var(--muted)}
+  .agent .state a{color:var(--accent);font-weight:500}
+  .label{font-size:.8125rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .value{font-size:1.375rem;line-height:1.25;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .value.text{font-size:1.125rem}
+  .value .hero{font-size:1.75rem;line-height:1.15}
+  .value .of{font-weight:500;color:var(--muted);font-size:1rem}
+  .sub{font-size:.875rem;color:var(--muted)}
+  .sub.warn{color:var(--review-ink)}
+  .tone-ok{color:var(--done-ink)} .tone-warn{color:var(--review-ink)} .tone-bad{color:var(--blocked-ink)} .tone-muted{color:var(--muted)}
+
+  .bar{display:flex;gap:2px;height:10px;border-radius:4px;overflow:hidden;background:var(--surface-2);margin-top:8px}
+  .bar i{display:block;height:100%;background:var(--st-mark);flex:0 0 auto}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:.8125rem;color:var(--muted);margin-top:8px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend .sw{width:8px;height:8px;border-radius:2px;background:var(--st-mark);flex:none}
+
+  /* ---- notices ---- */
+  .notice{
+    display:flex;gap:12px;align-items:flex-start;margin-top:16px;padding:12px 16px;border-radius:8px;font-size:.9375rem;
+    background:var(--review-tint);color:var(--review-ink);border:1px solid var(--review-mark);
+  }
+  .notice b{font-weight:700;flex:none}
+
+  /* ---- pipeline ---- */
+  .section{margin-top:32px}
+  .section-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:12px}
+  .section-title{font-size:1rem;font-weight:600}
+  .section-sub{font-size:.875rem;color:var(--muted)}
+
+  .board{display:block}
+  .col{margin-bottom:24px}
+  .col-head{
+    display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding-bottom:8px;margin-bottom:12px;
+    border-bottom:2px solid var(--st-mark);
+  }
+  .col-title{font-size:.8125rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--st-ink)}
+  .col-count{font-size:.875rem;font-weight:600;color:var(--text)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+  .col.is-empty .cards{display:none}
+  .col.is-empty .col-head{margin-bottom:0}
+  .col-empty{font-size:.875rem;color:var(--muted);padding:4px 0}
+  @media (min-width:1000px){
+    .board{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px;align-items:start}
+    .col{margin-bottom:0}
+    .cards{grid-template-columns:1fr}
+    .col.is-empty .cards{display:block}
+    .col.is-empty .col-head{margin-bottom:12px}
+  }
+  .blocked-group{margin-top:24px}
+  .blocked-group .col-head{border-bottom-color:var(--blocked-mark)}
+  .blocked-group .col-title{color:var(--blocked-ink)}
+  .blocked-group .cards{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+
+  .card{
+    display:block;position:relative;background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--st-mark);
+    border-radius:8px;padding:12px 14px;color:inherit;text-decoration:none;min-height:44px;
+  }
+  @media (hover:hover){.card:hover{border-color:var(--accent);border-left-color:var(--st-mark)}}
+  .card:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .card-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:.8125rem;color:var(--muted)}
+  .chip{
+    display:inline-block;font-size:.75rem;font-weight:700;letter-spacing:.04em;padding:1px 6px;border-radius:4px;
+    background:var(--surface-2);color:var(--muted);white-space:nowrap;line-height:1.5;
+  }
+  .chip.stage{background:var(--st-tint);color:var(--st-ink)}
+  .slug{font-size:.9375rem;font-weight:600;line-height:1.35;margin-top:6px}
+  .who{font-size:.875rem;color:var(--muted);margin-top:4px}
+  .note{
+    font-size:.875rem;color:var(--muted);margin-top:6px;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  }
+  .facts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+  .pill{
+    display:inline-flex;align-items:center;gap:4px;font-size:.75rem;font-weight:600;padding:2px 8px;border-radius:999px;
+    background:var(--surface-2);color:var(--muted);line-height:1.5;
+  }
+  .pill.bad{background:var(--blocked-tint);color:var(--blocked-ink)}
+  .pill.warn{background:var(--review-tint);color:var(--review-ink)}
+  .pill.ok{background:var(--done-tint);color:var(--done-ink)}
+
+  /* ---- events: full width at the foot, after everything the owner acts on ---- */
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;min-width:0;margin-top:32px}
+  .panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:4px}
+  .panel-title{font-size:.8125rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .panel-empty{font-size:.875rem;color:var(--muted);padding:8px 0}
+
+  .ev{display:grid;grid-template-columns:auto 1fr;grid-template-areas:"time kind" "text text";gap:2px 12px;padding:12px 0;border-top:1px solid var(--border);align-items:baseline}
+  .ev:first-child{border-top:0}
+  @media (min-width:600px){.ev{grid-template-columns:auto 96px 1fr;grid-template-areas:"time kind text"}}
+  .ev .time{grid-area:time;font-size:.8125rem;color:var(--muted);white-space:nowrap}
+  .ev .kind{grid-area:kind;font-size:.75rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--st-ink)}
+  .ev .text{grid-area:text;font-size:.9375rem;max-width:80ch}
+
+  footer{margin-top:32px;font-size:.8125rem;color:var(--muted);max-width:75ch}
+
+  /* ---- no-run state ---- */
+  .norun{text-align:center;padding:64px 16px;max-width:52ch;margin:0 auto}
+  .norun h2{font-size:1.25rem;font-weight:600;margin-bottom:8px}
+  .norun p{color:var(--muted);margin-top:8px}
+  .norun .mono{font-size:.875rem}
+
+  /* ---- detail dialog ---- */
+  dialog{
+    border:0;padding:0;margin:auto;background:var(--surface);color:var(--text);border-radius:16px;box-shadow:var(--shadow);
+    width:min(680px, calc(100vw - 32px));max-height:min(85vh, calc(100vh - 32px));
+    flex-direction:column;overflow:hidden;
+  }
+  dialog[open]{display:flex}
+  dialog::backdrop{background:var(--backdrop)}
+  @media (max-width:599px){
+    dialog{margin:auto 0 0 0;width:100vw;max-width:100vw;border-radius:16px 16px 0 0;max-height:92vh}
+  }
+  .d-head{display:flex;align-items:flex-start;gap:12px;padding:20px 24px 16px;border-bottom:1px solid var(--border);flex:none}
+  .d-head > div{flex:1;min-width:0}
+  .d-eyebrow{font-size:.8125rem;color:var(--muted);margin-bottom:4px}
+  .d-title{font-size:1.25rem;line-height:1.3;font-weight:600}
+  .d-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .d-close{
+    flex:none;width:44px;height:44px;border-radius:50%;border:1px solid var(--border);background:var(--surface);
+    font-size:1.375rem;line-height:1;cursor:pointer;display:grid;place-items:center;color:var(--muted);margin:-6px -8px 0 0;
+  }
+  @media (hover:hover){.d-close:hover{border-color:var(--accent);color:var(--accent)}}
+  .d-body{overflow:auto;padding:8px 24px 24px;-webkit-overflow-scrolling:touch}
+  .d-section{margin-top:20px}
+  .d-section h3{font-size:.8125rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+  .d-sub{font-size:.875rem;color:var(--muted);margin-bottom:8px}
+  dl.kv{display:grid;grid-template-columns:1fr;gap:0;margin-top:8px}
+  dl.kv > div{display:grid;grid-template-columns:1fr;gap:2px;padding:12px 0;border-top:1px solid var(--border)}
+  dl.kv > div:first-child{border-top:0}
+  @media (min-width:600px){dl.kv > div{grid-template-columns:132px 1fr;gap:16px}}
+  dl.kv dt{font-size:.8125rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding-top:2px}
+  dl.kv dd{margin:0;font-size:.9375rem;min-width:0}
+  dl.kv dd .sub{display:block}
+  .prose{white-space:pre-wrap;font-size:.9375rem;max-width:75ch}
+  .check{display:grid;grid-template-columns:20px auto 1fr;gap:4px 10px;padding:8px 0;border-top:1px solid var(--border);align-items:baseline}
+  .check:first-child{border-top:0}
+  .check .glyph{font-weight:700;text-align:center}
+  .check .cname{font-weight:600;font-size:.9375rem}
+  .check .cstatus{font-size:.8125rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+  .check .ctext{grid-column:2 / -1;font-size:.875rem;color:var(--muted)}
+  .check.pass .glyph,.check.pass .cstatus{color:var(--done-ink)}
+  .check.fail .glyph,.check.fail .cstatus{color:var(--blocked-ink)}
+  .check.running .glyph,.check.running .cstatus{color:var(--impl-ink)}
+  .check.pending .glyph,.check.pending .cstatus{color:var(--muted)}
+  .hist{position:relative;padding-left:20px}
+  .hist::before{content:"";position:absolute;left:5px;top:8px;bottom:8px;width:2px;background:var(--border)}
+  .hist li{position:relative;padding:6px 0 6px 8px}
+  .hist li::before{content:"";position:absolute;left:-19px;top:14px;width:8px;height:8px;border-radius:50%;background:var(--st-mark);border:2px solid var(--surface)}
+  .hist .hrow{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font-size:.875rem;color:var(--muted)}
+  .hist .htext{font-size:.9375rem;margin-top:2px}
+  .link-list{display:flex;flex-wrap:wrap;gap:8px}
+  .link-list a,.link-list span{display:inline-block;font-size:.875rem;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text);text-decoration:none;min-height:24px}
+  .link-list a{color:var(--accent)}
+  .link-list a:focus-visible{outline-offset:1px}
+
+  @media (prefers-reduced-motion: no-preference){
+    dialog[open]{animation:d-in 200ms ease-out}
+    dialog[open]::backdrop{animation:b-in 200ms ease-out}
+    @keyframes d-in{from{opacity:0;transform:translateY(12px) scale(.98)} to{opacity:1;transform:none}}
+    @keyframes b-in{from{opacity:0} to{opacity:1}}
+  }
+  @media (prefers-reduced-motion: reduce){
+    dialog[open]{animation:d-fade 120ms ease-out}
+    @keyframes d-fade{from{opacity:0} to{opacity:1}}
+  }
+  body:has(dialog[open]){overflow:hidden}
 </style>
 </head>
 <body>
-
-<div id="norun" class="hidden">
-  <div class="big">No delivery-team run is active</div>
-  <div>This page renders <span class="mono">state.js</span> written beside it by a running Manager.</div>
-  <div class="mono" style="margin-top:10px">waiting for .claude/team-progress/state.js …</div>
-</div>
-
-<div id="app" class="hidden">
-  <header class="page">
+<div class="wrap">
+  <header class="top">
     <div>
-      <div class="eyebrow">delivery-team</div>
-      <h1 id="run-label">Delivery run</h1>
-      <div class="args mono" id="run-args"></div>
+      <div class="eyebrow">Delivery team</div>
+      <h1 id="run-label">Delivery board</h1>
+      <p class="args" id="run-args" hidden></p>
     </div>
-    <div class="controls">
-      <span class="eyebrow" id="clock"></span>
-      <button class="theme" id="theme-btn" type="button">theme</button>
+    <div class="top-right">
+      <div class="fresh" id="fresh" hidden><span class="dot" id="fresh-dot"></span><span id="fresh-text"></span></div>
+      <button class="btn" id="theme-btn" type="button">Switch to dark</button>
     </div>
   </header>
 
-  <div class="banner stale hidden" id="stale-banner">
-    <b>Stale</b><span id="stale-text">The Manager has not written state for a while — the run may be stalled or finished.</span>
-  </div>
-  <div class="banner blocked hidden" id="blocked-banner">
-    <b>Blocked</b><span id="blocked-text"></span>
-  </div>
+  <main id="main">
+    <section class="norun" id="norun" aria-labelledby="norun-h">
+      <h2 id="norun-h">No run is active</h2>
+      <p>When a delivery-team run starts, its Manager writes <span class="mono">state.js</span> beside this page and the board fills in on its own. Nothing to do here until then.</p>
+      <p class="mono" id="norun-status">Checking for state.js every 3 s</p>
+    </section>
 
-  <div class="summary">
-    <div class="stat"><span class="eyebrow">Items done</span><span class="big mono" id="s-done">0<span style="color:var(--ink-2);font-size:1rem" id="s-total">/0</span></span></div>
-    <div class="stat" style="flex:1 1 240px">
-      <span class="eyebrow">Pipeline</span>
-      <span class="bar" id="s-bar" role="img" aria-label="pipeline progress"></span>
-      <span class="legend" id="s-legend"></span>
+    <div id="app" hidden>
+      <section class="health" aria-label="Run health">
+        <div class="cell status">
+          <span class="label">Status</span>
+          <span class="value" id="h-status"></span>
+          <span class="sub" id="h-status-sub"></span>
+        </div>
+        <div class="cell progress">
+          <span class="label">Landed</span>
+          <span class="value"><span class="hero num" id="h-done">0</span><span class="of">of <span id="h-total">0</span> items</span></span>
+          <div class="bar" id="h-bar" role="img" aria-label=""></div>
+          <div class="legend" id="h-legend"></div>
+        </div>
+        <div class="cell eta">
+          <span class="label">ETA</span>
+          <span class="value" id="h-eta"></span>
+          <span class="sub" id="h-eta-sub"></span>
+        </div>
+        <div class="cell elapsed">
+          <span class="label">Elapsed</span>
+          <span class="value num" id="h-elapsed"></span>
+          <span class="sub" id="h-started"></span>
+        </div>
+        <div class="cell main">
+          <span class="label" id="h-branch-label">Main branch</span>
+          <span class="value mono" id="h-tip"></span>
+          <span class="sub" id="h-origin"></span>
+        </div>
+        <details class="team" id="team" hidden>
+          <summary>
+            <span class="team-lead"><span class="dot" id="team-dot" aria-hidden="true"></span><span class="label">Team</span></span>
+            <span class="team-line" id="team-line"></span>
+            <span class="team-toggle"><span class="show">Show agents</span><span class="hide">Hide agents</span></span>
+          </summary>
+          <ul class="agents" id="agents" aria-label="Agents"></ul>
+        </details>
+      </section>
+
+      <div class="notice" id="stale" role="status" hidden>
+        <b>Stale</b>
+        <span id="stale-text"></span>
+      </div>
+
+      <section class="blocked-group st-blocked" id="blocked" aria-labelledby="blocked-h" hidden>
+        <div class="col-head">
+          <h2 class="col-title" id="blocked-h">Blocked</h2>
+          <span class="col-count" id="blocked-count"></span>
+        </div>
+        <p class="section-sub" id="blocked-sub" style="margin:-4px 0 12px"></p>
+        <div class="cards" id="blocked-cards"></div>
+      </section>
+
+      <section class="section" aria-labelledby="pipeline-h">
+        <div class="section-head">
+          <h2 class="section-title" id="pipeline-h">Pipeline</h2>
+          <span class="section-sub">Open an item for its details</span>
+        </div>
+        <div class="board" id="board"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="events-h">
+        <div class="panel-head"><h2 class="panel-title" id="events-h">Events</h2><span class="section-sub">Newest first</span></div>
+        <ol id="events"></ol>
+      </section>
+
+      <footer>
+        This board renders <span class="mono">state.js</span>, written beside it by the run's Manager, and re-reads it every 3 seconds. It is a view, not a record: git and the Manager's ledger remain the sources.
+      </footer>
     </div>
-    <div class="stat"><span class="eyebrow">Tip</span><span class="mono" id="s-tip">—</span></div>
-    <div class="stat"><span class="eyebrow">vs origin</span><span class="mono" id="s-origin">—</span></div>
-    <div class="stat"><span class="eyebrow">Elapsed</span><span class="mono" id="s-elapsed">—</span></div>
-  </div>
-
-  <div class="board" id="board"></div>
-
-  <div class="lower">
-    <div class="panel">
-      <h3>Agents</h3>
-      <div id="agents"></div>
-    </div>
-    <div class="panel">
-      <h3>Events — derived from git + payload relays</h3>
-      <div class="feed" id="events"></div>
-    </div>
-  </div>
-
-  <footer>
-    Every number here is derivable from two sources that already exist:
-    <span class="mono">git</span> (branches, worktrees, backlog files, tips) and the
-    Manager's ledger, written atomically to <span class="mono">state.js</span> beside this
-    page. The board is a renderer, not a second source of truth.
-  </footer>
+  </main>
 </div>
+
+<dialog id="detail" aria-labelledby="d-title">
+  <div class="d-head">
+    <div>
+      <div class="d-eyebrow">Item</div>
+      <h2 class="d-title" id="d-title"></h2>
+      <div class="d-chips" id="d-chips"></div>
+    </div>
+    <button class="d-close" id="d-close" type="button" aria-label="Close details">&times;</button>
+  </div>
+  <div class="d-body" id="d-body"></div>
+</dialog>
 
 <script>
 (function(){
   "use strict";
 
-  var POLL_MS = 3000;
-  var STALE_S = 90;
+  var POLL_MS = 3000;   // how often state.js is re-read
+  var TICK_MS = 1000;   // how often relative times are refreshed
+  var STALE_S = 90;     // no write for this long = stale
 
-  // Pipeline columns, in lifecycle order. A card's stage maps to one of these;
-  // stage "blocked" is off-pipeline and surfaces in the banner + agent rail.
-  var COLUMNS = [
-    {stage:"queued",       title:"Backlog",       cc:"var(--ink-2)"},
-    {stage:"implementing", title:"Implementing",  cc:"var(--impl)",    bg:"var(--impl-bg)"},
-    {stage:"review",       title:"In review",     cc:"var(--review)",  bg:"var(--review-bg)"},
-    {stage:"landing",      title:"Landing",       cc:"var(--landing)", bg:"var(--landing-bg)"},
-    {stage:"done",         title:"Done this run", cc:"var(--done)",    bg:"var(--done-bg)"}
+  var STAGES = [
+    {id:"queued",       title:"Queued"},
+    {id:"implementing", title:"Implementing"},
+    {id:"review",       title:"In review"},
+    {id:"landing",      title:"Landing"},
+    {id:"done",         title:"Done this run"}
   ];
+  var STAGE_TITLE = {queued:"Queued", implementing:"Implementing", review:"In review", landing:"Landing", done:"Done", blocked:"Blocked"};
+  var KNOWN = {queued:1, implementing:1, review:1, landing:1, done:1, blocked:1};
+  var MDOT = " \u00b7 ";
 
   var $ = function(id){ return document.getElementById(id); };
-  var el = function(tag, cls, txt){
+  function el(tag, cls, txt){
     var n = document.createElement(tag);
     if(cls) n.className = cls;
     if(txt != null) n.textContent = txt;
     return n;
-  };
-  var esc = function(v){ return (v == null ? "" : String(v)); };
+  }
+  function clear(n){ while(n.firstChild) n.removeChild(n.firstChild); }
+  // The writer uses a literal dash for "not assigned"; treat it as absent.
+  function present(v){
+    if(v == null) return false;
+    var s = String(v).trim();
+    return s !== "" && s !== "\u2014" && s !== "-" && s !== "\u2013" && s.toLowerCase() !== "n/a";
+  }
+  function str(v){ return present(v) ? String(v).trim() : null; }
+  function num(v){
+    if(v == null || v === "") return null;
+    var n = Number(v);
+    if(isNaN(n) || n <= 0) return null;
+    // Tolerate a writer that used milliseconds.
+    return n > 1e11 ? Math.floor(n/1000) : n;
+  }
+  function nowS(){ return Math.floor(Date.now()/1000); }
+  function stageOf(it){ return KNOWN[it && it.stage] ? it.stage : "queued"; }
 
-  // ---- theme toggle (persisted; defaults to prefers-color-scheme) ----
+  // ---- theme ----
+  var themeBtn = $("theme-btn");
+  var mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  function effectiveTheme(){
+    var t = document.documentElement.getAttribute("data-theme");
+    if(t === "dark" || t === "light") return t;
+    return (mq && mq.matches) ? "dark" : "light";
+  }
+  function labelTheme(){ themeBtn.textContent = effectiveTheme() === "dark" ? "Switch to light" : "Switch to dark"; }
   try {
     var saved = localStorage.getItem("team-board-theme");
     if(saved === "light" || saved === "dark") document.documentElement.setAttribute("data-theme", saved);
   } catch(e){}
-  $("theme-btn").addEventListener("click", function(){
-    var cur = document.documentElement.getAttribute("data-theme");
-    if(!cur){
-      cur = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    }
-    var next = cur === "dark" ? "light" : "dark";
+  labelTheme();
+  themeBtn.addEventListener("click", function(){
+    var next = effectiveTheme() === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
     try { localStorage.setItem("team-board-theme", next); } catch(e){}
+    labelTheme();
   });
+  if(mq && mq.addEventListener) mq.addEventListener("change", labelTheme);
 
-  // ---- time helpers ----
-  function nowS(){ return Math.floor(Date.now()/1000); }
-  function fmtClock(epoch){
-    if(!epoch) return "";
-    var d = new Date(epoch*1000);
-    return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
-  }
+  // ---- time formatting ----
   function fmtDur(sec){
-    if(sec == null || isNaN(sec) || sec < 0) return "—";
-    sec = Math.floor(sec);
-    if(sec < 60) return sec + "s";
-    var m = Math.floor(sec/60), s = sec % 60;
-    if(m < 60) return m + "m" + (s ? " " + s + "s" : "");
+    if(sec == null || isNaN(sec)) return "";
+    sec = Math.max(0, Math.floor(sec));
+    if(sec < 60) return sec + " s";
+    var m = Math.floor(sec/60);
+    if(m < 60) return m + " min";
     var h = Math.floor(m/60); m = m % 60;
-    return h + "h" + (m ? " " + m + "m" : "");
+    if(h < 24) return h + " h" + (m ? " " + m + " min" : "");
+    var d = Math.floor(h/24); h = h % 24;
+    return d + " d" + (h ? " " + h + " h" : "");
   }
-  function short(sha){ return sha ? String(sha).slice(0,7) : "—"; }
+  function sameDay(a, b){
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+  function fmtClock(epoch){
+    var d = new Date(epoch*1000), now = new Date();
+    var t = d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+    if(sameDay(d, now)) return t;
+    return d.toLocaleDateString([], {weekday:"short"}) + " " + t;
+  }
+  function relEta(epoch, now){
+    var diff = epoch - now;
+    if(diff >= -30) return {text: "in " + fmtDur(Math.max(diff, 0)), tone:"ok"};
+    return {text: fmtDur(-diff) + " overdue", tone:"warn"};
+  }
+  // Elements carrying data-rel are refreshed every tick without a rebuild.
+  function relSpan(kind, at, cls){
+    var s = el("span", (cls || "") + " num");
+    s.setAttribute("data-rel", kind);
+    s.setAttribute("data-at", String(at));
+    setRel(s, nowS());
+    return s;
+  }
+  function setRel(s, now){
+    var at = Number(s.getAttribute("data-at"));
+    var kind = s.getAttribute("data-rel");
+    if(kind === "ago") s.textContent = fmtDur(now - at) + " ago";
+    else if(kind === "dur") s.textContent = fmtDur(now - at);
+    else if(kind === "eta"){ var r = relEta(at, now); s.textContent = r.text; }
+  }
+  function short(sha){ var s = str(sha); return s ? s.slice(0, 8) : null; }
 
-  // ---- render ----
+  // ---- state bookkeeping ----
+  var current = null;      // last good TEAM_STATE
+  var lastKey = null;      // serialisation of the last rendered frame
+  var openSlug = null;     // slug shown in the dialog, if open
+
+  function itemBySlug(slug){
+    var items = current && Array.isArray(current.items) ? current.items : [];
+    for(var i = 0; i < items.length; i++){ if(String(items[i].slug) === slug) return items[i]; }
+    return null;
+  }
+  function group(items){
+    var by = {queued:[], implementing:[], review:[], landing:[], done:[], blocked:[]};
+    items.forEach(function(it){ if(it && typeof it === "object") by[stageOf(it)].push(it); });
+    return by;
+  }
+
+  // ---- render: whole frame ----
   function showNoRun(){
-    $("norun").classList.remove("hidden");
-    $("app").classList.add("hidden");
-    document.title = "Delivery Team — no run";
+    $("norun").hidden = false;
+    $("app").hidden = true;
+    $("fresh").hidden = true;
+    $("run-label").textContent = "Delivery board";
+    $("run-args").hidden = true;
+    document.title = "Delivery board" + MDOT + "no run";
+    if(dlg.open){ dlg.close(); }
+    current = null; lastKey = null;
   }
 
   function render(state){
     if(!state || typeof state !== "object"){ showNoRun(); return; }
-    $("norun").classList.add("hidden");
-    $("app").classList.remove("hidden");
+    var key;
+    try { key = JSON.stringify(state); } catch(e){ key = String(Date.now()); }
+    current = state;
+    if(key === lastKey){ tick(); return; }
+    lastKey = key;
 
-    var items  = Array.isArray(state.items)  ? state.items  : [];
-    var agents = Array.isArray(state.agents) ? state.agents : [];
-    var events = Array.isArray(state.events) ? state.events : [];
-    var run    = state.run  || {};
-    var repo   = state.repo || {};
-    var gen    = Number(state.generatedAt) || 0;
+    $("norun").hidden = true;
+    $("app").hidden = false;
 
-    // header
-    $("run-label").textContent = run.label || "Delivery run";
-    $("run-args").textContent  = run.args ? "args: " + run.args : "";
-    $("clock").textContent     = gen ? "updated " + fmtClock(gen) : "";
+    var run = state.run || {};
+    $("run-label").textContent = str(run.label) || "Delivery run";
+    var args = str(run.args);
+    $("run-args").hidden = !args;
+    $("run-args").textContent = args || "";
 
-    // staleness
-    var stale = gen ? (nowS() - gen) > STALE_S : true;
-    var staleBanner = $("stale-banner");
+    var focusKey = focusedKey();
+    renderSummary(state);
+    renderBoard(state);
+    renderTeam(state, true);
+    renderEvents(state);
+    if(focusKey) refocus(focusKey);
+    if(dlg.open && openSlug) renderDetail(openSlug, true);
+  }
+
+  // Cheap parts that depend on the clock: rerun every tick.
+  function renderSummary(state){
+    var now = nowS();
+    var items = Array.isArray(state.items) ? state.items : [];
+    var by = group(items);
+    var total = items.length, done = by.done.length, blocked = by.blocked.length;
+    var inFlight = by.implementing.length + by.review.length + by.landing.length;
+    var gen = num(state.generatedAt);
+    var stale = gen ? (now - gen) > STALE_S : true;
+    var run = state.run || {};
+    var repo = state.repo || {};
+
+    // freshness
+    var fresh = $("fresh"); fresh.hidden = false;
+    fresh.classList.toggle("is-stale", stale);
+    $("fresh-dot").className = "dot " + (stale ? "quiet" : "live");
+    clear($("fresh-text"));
+    if(gen){
+      $("fresh-text").appendChild(document.createTextNode("Updated " + fmtClock(gen) + MDOT));
+      $("fresh-text").appendChild(relSpan("ago", gen));
+    } else {
+      $("fresh-text").textContent = "No timestamp in state";
+    }
+
+    // stale notice
+    var staleBox = $("stale");
+    staleBox.hidden = !stale;
     if(stale){
-      staleBanner.classList.remove("hidden");
-      $("stale-text").textContent = gen
-        ? "Last state write was " + fmtDur(nowS() - gen) + " ago (over " + STALE_S
-          + "s) — the Manager may be stalled or the run finished."
-        : "No timestamp in state — the Manager may not be writing.";
-    } else {
-      staleBanner.classList.add("hidden");
-    }
-
-    // counts by stage
-    var byStage = {queued:[], implementing:[], review:[], landing:[], done:[], blocked:[]};
-    items.forEach(function(it){
-      var st = byStage[it.stage] ? it.stage : "queued";
-      byStage[st].push(it);
-    });
-    var total = items.length;
-    var doneN = byStage.done.length;
-
-    // blocked banner
-    var blockedBanner = $("blocked-banner");
-    if(byStage.blocked.length){
-      blockedBanner.classList.remove("hidden");
-      $("blocked-text").textContent = byStage.blocked.map(function(it){
-        return esc(it.slug) + (it.note ? " (" + it.note + ")" : "");
-      }).join(" · ");
-    } else {
-      blockedBanner.classList.add("hidden");
-    }
-
-    // summary
-    $("s-done").firstChild.nodeValue = String(doneN);
-    $("s-total").textContent = "/" + total;
-    var segs = [
-      {n: byStage.done.length,         c:"var(--done)"},
-      {n: byStage.landing.length,      c:"var(--landing)"},
-      {n: byStage.review.length,       c:"var(--review)"},
-      {n: byStage.implementing.length, c:"var(--impl)"},
-      {n: byStage.blocked.length,      c:"var(--blocked)"}
-    ];
-    var bar = $("s-bar"); bar.innerHTML = "";
-    if(total){
-      segs.forEach(function(seg){
-        if(!seg.n) return;
-        var i = el("i");
-        i.style.width = (100 * seg.n / total) + "%";
-        i.style.background = seg.c;
-        bar.appendChild(i);
-      });
-    }
-    var legend = $("s-legend"); legend.innerHTML = "";
-    [["done","var(--done)",byStage.done.length],
-     ["in review","var(--review)",byStage.review.length],
-     ["blocked","var(--blocked)",byStage.blocked.length]].forEach(function(l){
-      var s = el("span");
-      var d = el("span","dot"); d.style.background = l[1];
-      s.appendChild(d); s.appendChild(document.createTextNode(l[0] + " " + l[2]));
-      legend.appendChild(s);
-    });
-
-    $("s-tip").textContent = short(repo.tip);
-    var ahead = repo.aheadOfOrigin;
-    $("s-origin").textContent = (ahead == null) ? "—" : (ahead === 0 ? "in sync" : ("ahead " + ahead + " ↑"));
-    $("s-elapsed").textContent = run.startedAt ? fmtDur(nowS() - Number(run.startedAt)) : "—";
-
-    // board
-    var board = $("board"); board.innerHTML = "";
-    COLUMNS.forEach(function(col){
-      var list = byStage[col.stage] || [];
-      var c = el("div","col");
-      c.style.setProperty("--cc", col.cc);
-      if(col.bg) c.style.setProperty("--cc-bg", col.bg);
-      var h = el("h3");
-      h.appendChild(document.createTextNode(col.title));
-      h.appendChild(el("span","mono", String(list.length)));
-      c.appendChild(h);
-      var cards = el("div","cards");
-      if(!list.length){
-        cards.appendChild(el("div","empty","—"));
+      var t = $("stale-text"); clear(t);
+      if(gen){
+        t.appendChild(document.createTextNode("The Manager has not written state since " + fmtClock(gen) + " ("));
+        var ago = relSpan("ago", gen); ago.setAttribute("aria-hidden", "true"); t.appendChild(ago);
+        t.appendChild(document.createTextNode("). The run may be stalled or finished; numbers below are as of that write."));
       } else {
-        list.forEach(function(it){ cards.appendChild(renderCard(it)); });
+        t.textContent = "The state file carries no timestamp, so its age is unknown.";
       }
-      c.appendChild(cards);
-      board.appendChild(c);
+    }
+
+    // status
+    var st = $("h-status"), stSub = $("h-status-sub");
+    var status;
+    if(blocked) status = {label:"Blocked", tone:"bad", dot:"silent", sub: blocked + (blocked === 1 ? " item parked" : " items parked") + MDOT + inFlight + " in flight"};
+    else if(stale) status = {label:"Stale", tone:"warn", dot:"quiet", sub:"no state write for " + (gen ? fmtDur(now - gen) : "an unknown time")};
+    else if(total && done === total) status = {label:"Drained", tone:"ok", dot:"live", sub:"all " + total + " items landed"};
+    else if(!total) status = {label:"Starting", tone:"muted", dot:"idle", sub:"no items in state yet"};
+    else status = {label:"Running", tone:"ok", dot:"live", sub: inFlight + " in flight" + MDOT + by.queued.length + " queued"};
+    clear(st);
+    st.className = "value tone-" + status.tone;
+    var sd = el("span", "dot " + status.dot); sd.setAttribute("aria-hidden", "true");
+    st.appendChild(sd);
+    st.appendChild(document.createTextNode(status.label));
+    stSub.textContent = status.sub;
+
+    // landed + bar
+    $("h-done").textContent = String(done);
+    $("h-total").textContent = String(total);
+    var bar = $("h-bar"); clear(bar);
+    var order = ["done","landing","review","implementing","queued","blocked"];
+    var aria = [];
+    order.forEach(function(s){
+      var n = by[s].length; if(!n) return;
+      var seg = el("i", "st-" + s);
+      seg.style.flexGrow = String(n);
+      seg.style.flexBasis = "0";
+      bar.appendChild(seg);
+      aria.push(n + " " + STAGE_TITLE[s].toLowerCase());
+    });
+    bar.setAttribute("aria-label", total ? ("Pipeline: " + aria.join(", ")) : "Pipeline: no items");
+    var legend = $("h-legend"); clear(legend);
+    order.forEach(function(s){
+      var n = by[s].length; if(!n) return;
+      var span = el("span", "st-" + s);
+      span.appendChild(el("i", "sw"));
+      span.appendChild(document.createTextNode(n + " " + STAGE_TITLE[s].toLowerCase()));
+      legend.appendChild(span);
     });
 
-    // agents
-    var arail = $("agents"); arail.innerHTML = "";
-    if(!agents.length){
-      arail.appendChild(el("div","empty","no agents reported"));
-    } else {
-      agents.forEach(function(a){
-        var row = el("div","agent");
-        var who = el("span","who");
-        var dot = el("span","dot"); dot.style.background = agentDot(a.state);
-        who.appendChild(dot); who.appendChild(document.createTextNode(esc(a.role)));
-        var what = el("span","what");
-        var since = a.lastSignalAt ? " · " + fmtDur(nowS() - Number(a.lastSignalAt)) + " ago" : "";
-        what.textContent = esc(a.state) + since;
-        row.appendChild(who); row.appendChild(what);
-        arail.appendChild(row);
-      });
+    // eta
+    var etaV = $("h-eta"), etaS = $("h-eta-sub");
+    clear(etaV); etaS.className = "sub";
+    var eta = resolveEta(state, by, now);
+    etaV.className = "value" + (eta.small ? " text" : "") + (eta.tone ? " tone-" + eta.tone : "");
+    etaV.appendChild(document.createTextNode(eta.value));
+    clear(etaS);
+    if(eta.rel){ etaS.appendChild(relSpan("eta", eta.rel)); etaS.appendChild(document.createTextNode(MDOT + eta.sub)); if(eta.rel < now - 30) etaS.classList.add("warn"); }
+    else etaS.textContent = eta.sub;
+
+    // elapsed
+    var started = num(run.startedAt);
+    var elV = $("h-elapsed"); clear(elV);
+    if(started){ elV.appendChild(relSpan("dur", started)); $("h-started").textContent = "started " + fmtClock(started); }
+    else { elV.textContent = "unknown"; elV.classList.add("tone-muted"); $("h-started").textContent = "no start time in state"; }
+
+    // repo
+    $("h-branch-label").textContent = str(repo.defaultBranch) ? ("Branch " + str(repo.defaultBranch)) : "Main branch";
+    $("h-tip").textContent = short(repo.tip) || "\u2013";
+    var ahead = (repo.aheadOfOrigin == null || repo.aheadOfOrigin === "") ? null : Number(repo.aheadOfOrigin);
+    $("h-origin").textContent = (ahead == null || isNaN(ahead)) ? "" : (ahead === 0 ? "in sync with origin" : (ahead + (ahead === 1 ? " commit" : " commits") + " ahead of origin"));
+
+    // tab title: glanceable from the tab strip
+    var title = done + "/" + total;
+    if(blocked) title += MDOT + blocked + " blocked";
+    if(stale) title = "[stale] " + title;
+    document.title = title + MDOT + (str(run.label) || "Delivery run");
+  }
+
+  function resolveEta(state, by, now){
+    var total = Object.keys(by).reduce(function(a,k){ return a + by[k].length; }, 0);
+    if(total && by.done.length === total) return {value:"Drained", sub:"all items landed", tone:"ok"};
+    var e = state.eta;
+    if(num(e)) return {value: fmtClock(num(e)), rel: num(e), sub:"Manager estimate"};
+    if(str(e)) return {value: str(e), sub:"as written by the Manager", small:true};
+    // Derived: the latest numeric ETA among items that have not landed.
+    var latest = null, textEtas = 0;
+    (Array.isArray(state.items) ? state.items : []).forEach(function(it){
+      if(!it || stageOf(it) === "done") return;
+      var n = num(it.eta);
+      if(n){ if(latest == null || n > latest) latest = n; }
+      else if(str(it.eta)) textEtas++;
+    });
+    if(latest) return {value: fmtClock(latest), rel: latest, sub:"latest item ETA"};
+    if(textEtas) return {value:"unknown", sub: textEtas + (textEtas === 1 ? " item carries" : " items carry") + " a text ETA; no run ETA written", tone:"muted"};
+    return {value:"unknown", sub:"no ETA written yet", tone:"muted"};
+  }
+
+  // ---- board ----
+  function renderBoard(state){
+    var items = Array.isArray(state.items) ? state.items : [];
+    var by = group(items);
+
+    var blockedSec = $("blocked");
+    blockedSec.hidden = !by.blocked.length;
+    if(by.blocked.length){
+      $("blocked-count").textContent = String(by.blocked.length);
+      $("blocked-sub").textContent = "Parked off the pipeline. Open an item for the reason.";
+      var bc = $("blocked-cards"); clear(bc);
+      by.blocked.forEach(function(it){ bc.appendChild(renderCard(it)); });
     }
 
-    // events (newest first, bounded by the writer to ~20)
-    var feed = $("events"); feed.innerHTML = "";
-    if(!events.length){
-      feed.appendChild(el("div","empty","no events yet"));
-    } else {
-      events.forEach(function(ev){
-        var row = el("div","ev");
-        row.appendChild(el("span","t mono", fmtClock(Number(ev.at))));
-        var k = el("span","k", esc(ev.kind).toUpperCase());
-        k.style.color = eventColor(ev.kind);
-        row.appendChild(k);
-        row.appendChild(el("span", null, esc(ev.text)));
-        feed.appendChild(row);
-      });
-    }
+    var board = $("board"); clear(board);
+    STAGES.forEach(function(s){
+      var list = by[s.id];
+      var col = el("section", "col st-" + s.id + (list.length ? "" : " is-empty"));
+      col.setAttribute("aria-label", s.title + ", " + list.length);
+      var head = el("div", "col-head");
+      head.appendChild(el("h3", "col-title", s.title));
+      head.appendChild(el("span", "col-count", String(list.length)));
+      col.appendChild(head);
+      var cards = el("div", "cards");
+      if(!list.length) cards.appendChild(el("div", "col-empty", "No items"));
+      else list.forEach(function(it){ cards.appendChild(renderCard(it)); });
+      col.appendChild(cards);
+      board.appendChild(col);
+    });
+  }
 
-    // document.title — glanceable in the tab strip
-    var mark = stale ? "▫ " : "";
-    var blockedMark = byStage.blocked.length ? (" ✕" + byStage.blocked.length) : "";
-    document.title = mark + "team " + doneN + "/" + total + blockedMark + " · " + (run.label || "run");
+  function checkSummary(checks){
+    if(!Array.isArray(checks) || !checks.length) return null;
+    var c = {pass:0, fail:0, running:0, pending:0, n:0};
+    checks.forEach(function(k){
+      if(!k || typeof k !== "object") return;
+      var s = String(k.status || "pending").toLowerCase();
+      if(c[s] == null) s = "pending";
+      c[s]++; c.n++;
+    });
+    return c;
   }
 
   function renderCard(it){
-    var card = el("div","card" + (it.stage === "blocked" ? " isblocked" : ""));
-    card.appendChild(el("div","slug", esc(it.slug)));
-    var m1 = el("div","meta");
-    var chip = el("span","chip" + (it.stage === "blocked" ? " blocked" : ""), esc(it.priority || "—"));
-    m1.appendChild(chip);
-    m1.appendChild(el("span","mono", fmtDur(it.stageEnteredAt ? (nowS() - Number(it.stageEnteredAt)) : null)));
-    card.appendChild(m1);
-    var m2 = el("div","meta");
-    var whoModel = [it.agent, it.model].filter(Boolean).join(" · ") || "—";
-    m2.appendChild(el("span", null, whoModel));
-    m2.appendChild(el("span","mono", short(it.head)));
-    card.appendChild(m2);
-    if(Array.isArray(it.grouped) && it.grouped.length){
-      card.appendChild(el("div","grouped", "⧉ grouped: " + it.grouped.join(" · ")));
+    var slug = str(it.slug) || "(unnamed item)";
+    var stage = stageOf(it);
+    var a = el("a", "card st-" + stage);
+    a.href = "#item/" + encodeURIComponent(slug);
+    a.setAttribute("data-slug", slug);
+    a.setAttribute("data-fkey", "card:" + slug);
+
+    var top = el("div", "card-top");
+    var left = el("span");
+    left.appendChild(el("span", "chip", str(it.priority) || "P?"));
+    top.appendChild(left);
+    var entered = num(it.stageEnteredAt);
+    if(entered){
+      var since = el("span", "since");
+      since.appendChild(relSpan("dur", entered));
+      since.appendChild(document.createTextNode(" in stage"));
+      top.appendChild(since);
     }
-    return card;
+    a.appendChild(top);
+    a.appendChild(el("div", "slug", slug));
+
+    var who = [str(it.agent), str(it.model)].filter(Boolean).join(MDOT);
+    if(who) a.appendChild(el("div", "who", who));
+    var note = str(it.note);
+    if(note) a.appendChild(el("div", "note", note));
+
+    var facts = el("div", "facts");
+    var now = nowS();
+    var etaN = num(it.eta), etaT = str(it.eta);
+    if(etaN && stage !== "done"){
+      var r = relEta(etaN, now);
+      facts.appendChild(el("span", "pill" + (r.tone === "warn" ? " warn" : ""), "ETA " + fmtClock(etaN)));
+    } else if(etaT && stage !== "done"){
+      facts.appendChild(el("span", "pill", "ETA: " + etaT));
+    }
+    if(Array.isArray(it.dependsOn) && it.dependsOn.length){
+      facts.appendChild(el("span", "pill", "waits on " + it.dependsOn.length));
+    }
+    var cs = checkSummary(it.checks);
+    if(cs){
+      var cls = cs.fail ? " bad" : (cs.running || cs.pending ? "" : " ok");
+      var txt = cs.fail ? (cs.fail + (cs.fail === 1 ? " check failing" : " checks failing"))
+              : (cs.running ? (cs.pass + "/" + cs.n + " checks" + MDOT + cs.running + " running")
+              : (cs.pass + "/" + cs.n + " checks"));
+      facts.appendChild(el("span", "pill" + cls, txt));
+    }
+    if(Array.isArray(it.grouped) && it.grouped.length){
+      facts.appendChild(el("span", "pill", "lands with " + it.grouped.length + (it.grouped.length === 1 ? " sibling" : " siblings")));
+    }
+    if(facts.childNodes.length) a.appendChild(facts);
+    return a;
   }
 
-  function agentDot(state){
-    var s = (state || "").toLowerCase();
-    if(s.indexOf("block") >= 0) return "var(--blocked)";
-    if(s.indexOf("review") >= 0) return "var(--review)";
-    if(s.indexOf("idle") >= 0 || s.indexOf("standing") >= 0 || s.indexOf("n/a") >= 0) return "var(--ink-2)";
-    return "var(--done)";
+  // Rebuilt rows lose focus; data-fkey names the one to give it back to.
+  function focusedKey(){
+    var f = document.activeElement;
+    return (f && f.getAttribute) ? f.getAttribute("data-fkey") : null;
   }
-  function eventColor(kind){
-    var k = (kind || "").toLowerCase();
-    if(k.indexOf("merg") >= 0 || k.indexOf("done") >= 0) return "var(--done)";
-    if(k.indexOf("block") >= 0) return "var(--blocked)";
-    if(k.indexOf("review") >= 0) return "var(--review)";
-    if(k.indexOf("land") >= 0) return "var(--landing)";
-    if(k.indexOf("ready") >= 0 || k.indexOf("dispatch") >= 0) return "var(--impl)";
-    return "var(--accent)";
+  function refocus(key){
+    var nodes = document.querySelectorAll("[data-fkey]");
+    for(var i = 0; i < nodes.length; i++){
+      if(nodes[i].getAttribute("data-fkey") === key){ nodes[i].focus({preventScroll:true}); return; }
+    }
+  }
+
+  // ---- team ----
+  // Buckets, most to least concerning. A state text that opens by saying the
+  // agent is parked or closed is trusted over its signal age: a deliberately
+  // idle agent is not a stuck one, so "silent" is kept for the ones that
+  // matter. Only the opening words count, because a state text often
+  // describes other agents ("nav parked; player-b running").
+  var BUCKETS = ["silent", "live", "quiet", "idle", "closed", "no signal", "not spawned"];
+  function liveness(a, now){
+    var s = String(a.state || "").toLowerCase();
+    var at = num(a.lastSignalAt);
+    if(/not yet spawned|not spawned|unspawned/.test(s)) return {tone:"idle", label:"not spawned"};
+    if(/^\W*(parked|holding|inactive|idle|standing by)\b/.test(s)) return {tone:"idle", label:"idle"};
+    if(/^\W*(closed|finished|done|complete|completed|n\/a)\b/.test(s)) return {tone:"idle", label:"closed"};
+    if(!at) return {tone:"idle", label:"no signal"};
+    var age = now - at;
+    if(age < 120) return {tone:"live", label:"live"};
+    if(age < 600) return {tone:"quiet", label:"quiet"};
+    return {tone:"silent", label:"silent"};
+  }
+  function escapeRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+  // Free text with any current item slug turned into a link to that item.
+  function linkSlugs(text, fkeyPrefix){
+    var frag = document.createDocumentFragment();
+    var items = current && Array.isArray(current.items) ? current.items : [];
+    var slugs = items.map(function(it){ return it && str(it.slug); }).filter(Boolean)
+      .sort(function(a, b){ return b.length - a.length; });
+    if(!slugs.length){ frag.appendChild(document.createTextNode(text)); return frag; }
+    var re = new RegExp(slugs.map(escapeRe).join("|"), "g");
+    var last = 0, m, n = 0;
+    while((m = re.exec(text))){
+      if(m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var a = el("a", null, m[0]);
+      a.href = "#item/" + encodeURIComponent(m[0]);
+      a.setAttribute("data-fkey", fkeyPrefix + ":" + (n++) + ":" + m[0]);
+      frag.appendChild(a);
+      last = re.lastIndex;
+    }
+    if(last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    return frag;
+  }
+
+  var teamBox = $("team");
+  var lastTeamSig = null;
+  // Liveness is a function of the clock, so buckets move without a state write.
+  // Called forced on every new frame and unforced on every tick; the unforced
+  // call rebuilds only when some agent changed bucket, so focus and the
+  // ticking ages inside are left alone otherwise.
+  function renderTeam(state, force){
+    var agents = (Array.isArray(state.agents) ? state.agents : []).filter(function(a){ return a && typeof a === "object"; });
+    if(!agents.length){ teamBox.hidden = true; lastTeamSig = null; return; }
+    teamBox.hidden = false;
+    var now = nowS();
+    var lv = agents.map(function(a){ return liveness(a, now); });
+    var sig = lv.map(function(l){ return l.label; }).join("|");
+    if(!force && sig === lastTeamSig) return;
+    lastTeamSig = sig;
+
+    var counts = {}, silent = [];
+    lv.forEach(function(l, i){
+      counts[l.label] = (counts[l.label] || 0) + 1;
+      if(l.label === "silent") silent.push(agents[i]);
+    });
+    var worst = counts.silent ? "silent" : counts.quiet ? "quiet" : counts.live ? "live" : "idle";
+    $("team-dot").className = "dot " + worst;
+
+    var line = $("team-line"); clear(line);
+    var segs = [];
+    if(silent.length){
+      var b = el("b", "silent");
+      b.appendChild(document.createTextNode(silent.length + " silent: "));
+      var named = silent.slice(0, 3);
+      named.forEach(function(a, i){
+        if(i) b.appendChild(document.createTextNode(", "));
+        b.appendChild(document.createTextNode((str(a.role) || "Agent") + " \u2013 "));
+        b.appendChild(relSpan("ago", num(a.lastSignalAt)));
+      });
+      if(silent.length > named.length) b.appendChild(document.createTextNode(" and " + (silent.length - named.length) + " more"));
+      segs.push(b);
+    }
+    BUCKETS.forEach(function(k){
+      if(k === "silent" || !counts[k]) return;
+      segs.push(el("span", null, counts[k] + " " + k));
+    });
+    segs.forEach(function(s, i){
+      if(i) line.appendChild(el("span", "sep", MDOT));
+      line.appendChild(s);
+    });
+
+    var list = $("agents"); clear(list);
+    agents.forEach(function(a, i){
+      var li = el("li", "agent");
+      var d = el("span", "dot " + lv[i].tone); d.setAttribute("aria-hidden", "true");
+      li.appendChild(d);
+      li.appendChild(el("span", "name", str(a.role) || "Agent"));
+      var sig2 = el("span", "signal" + (lv[i].label === "silent" ? " is-silent" : ""));
+      sig2.appendChild(document.createTextNode(lv[i].label));
+      var at = num(a.lastSignalAt);
+      if(at && lv[i].tone !== "idle"){ sig2.appendChild(document.createTextNode(MDOT)); sig2.appendChild(relSpan("ago", at)); }
+      else if(at){ sig2.appendChild(document.createTextNode(MDOT + fmtClock(at))); }
+      li.appendChild(sig2);
+      var stateText = str(a.state);
+      if(stateText){
+        var st = el("span", "state");
+        st.appendChild(linkSlugs(stateText, "agent:" + i));
+        li.appendChild(st);
+      }
+      list.appendChild(li);
+    });
+  }
+  try {
+    if(localStorage.getItem("team-board-agents") === "open") teamBox.open = true;
+  } catch(e){}
+  teamBox.addEventListener("toggle", function(){
+    try { localStorage.setItem("team-board-agents", teamBox.open ? "open" : "closed"); } catch(e){}
+  });
+
+  // ---- events ----
+  function kindStage(kind){
+    var k = String(kind || "").toLowerCase();
+    if(/merg|done|drain|landed/.test(k)) return "done";
+    if(/block|fail/.test(k)) return "blocked";
+    if(/review|changes/.test(k)) return "review";
+    if(/land|rebase/.test(k)) return "landing";
+    if(/ready|dispatch|impl|start/.test(k)) return "implementing";
+    return "none";
+  }
+  function renderEvents(state){
+    var events = (Array.isArray(state.events) ? state.events : []).filter(function(e){ return e && typeof e === "object"; });
+    var list = $("events"); clear(list);
+    if(!events.length){ list.appendChild(el("li", "panel-empty", "No events yet")); return; }
+    var sorted = events.slice().sort(function(a, b){ return (num(b.at) || 0) - (num(a.at) || 0); });
+    sorted.forEach(function(ev){
+      var li = el("li", "ev st-" + kindStage(ev.kind));
+      var at = num(ev.at);
+      li.appendChild(el("span", "time num", at ? fmtClock(at) : ""));
+      li.appendChild(el("span", "kind", str(ev.kind) || "event"));
+      li.appendChild(el("span", "text", str(ev.text) || ""));
+      list.appendChild(li);
+    });
+  }
+
+  // ---- detail dialog ----
+  var dlg = $("detail");
+  var dBody = $("d-body");
+
+  function kv(dl, label, valueNode){
+    if(valueNode == null) return;
+    var row = el("div");
+    row.appendChild(el("dt", null, label));
+    var dd = el("dd");
+    if(typeof valueNode === "string") dd.textContent = valueNode; else dd.appendChild(valueNode);
+    row.appendChild(dd);
+    dl.appendChild(row);
+  }
+  function stageChip(stage, rawStage){
+    var known = KNOWN[rawStage];
+    var chip = el("span", "chip stage st-" + (known ? rawStage : "none"), known ? STAGE_TITLE[rawStage] : (str(rawStage) || "no stage"));
+    return chip;
+  }
+  function slugLinks(slugs){
+    var wrap = el("div", "link-list");
+    slugs.forEach(function(s){
+      var name = str(s); if(!name) return;
+      if(itemBySlug(name)){
+        var a = el("a", null, name);
+        a.href = "#item/" + encodeURIComponent(name);
+        wrap.appendChild(a);
+      } else {
+        wrap.appendChild(el("span", null, name));
+      }
+    });
+    return wrap.childNodes.length ? wrap : null;
+  }
+
+  function renderDetail(slug, keepScroll){
+    var scrollTop = keepScroll ? dBody.scrollTop : 0;
+    var it = itemBySlug(slug);
+    clear($("d-chips")); clear(dBody);
+    $("d-title").textContent = slug;
+    if(!it){
+      dBody.appendChild(el("p", "d-section prose", current
+        ? "This item is not in the run's current state. It may have been renamed, or the run may have moved on."
+        : "No run is active, so there are no item details to show."));
+      return;
+    }
+    var now = nowS();
+    var chips = $("d-chips");
+    if(str(it.priority)) chips.appendChild(el("span", "chip", str(it.priority)));
+    chips.appendChild(stageChip(stageOf(it), it.stage));
+
+    // Facts
+    var dl = el("dl", "kv");
+    var entered = num(it.stageEnteredAt);
+    if(entered){
+      var sv = el("span");
+      sv.appendChild(relSpan("dur", entered));
+      sv.appendChild(document.createTextNode(" in stage" + MDOT + "since " + fmtClock(entered)));
+      kv(dl, "Stage", sv);
+    }
+    var who = [str(it.agent), str(it.model)].filter(Boolean);
+    if(who.length) kv(dl, "Assigned", who.join(MDOT));
+    if(str(it.branch)){ var b = el("span", "mono", str(it.branch)); kv(dl, "Branch", b); }
+    if(short(it.head)){ var h = el("span", "mono", short(it.head)); kv(dl, "Head", h); }
+    var etaN = num(it.eta), etaT = str(it.eta);
+    if(etaN){
+      var ev = el("span");
+      ev.appendChild(document.createTextNode(fmtClock(etaN) + MDOT));
+      var r = relEta(etaN, now);
+      ev.appendChild(relSpan("eta", etaN, r.tone === "warn" ? "tone-warn" : ""));
+      kv(dl, "ETA", ev);
+    } else if(etaT){ kv(dl, "ETA", etaT); }
+    if(Array.isArray(it.dependsOn) && it.dependsOn.length) kv(dl, "Waits on", slugLinks(it.dependsOn));
+    if(Array.isArray(it.grouped) && it.grouped.length) kv(dl, "Lands with", slugLinks(it.grouped));
+    if(str(it.note)) kv(dl, "Note", str(it.note));
+    if(dl.childNodes.length) dBody.appendChild(dl);
+
+    var hasMore = false;
+
+    // Detail text
+    if(str(it.detail)){
+      hasMore = true;
+      var sec = el("section", "d-section");
+      sec.appendChild(el("h3", null, "What is happening"));
+      sec.appendChild(el("p", "prose", str(it.detail)));
+      dBody.appendChild(sec);
+    }
+
+    // Checks
+    var cs = checkSummary(it.checks);
+    if(cs){
+      hasMore = true;
+      var csec = el("section", "d-section");
+      csec.appendChild(el("h3", null, "Checks"));
+      var parts = [];
+      if(cs.pass) parts.push(cs.pass + " passed");
+      if(cs.fail) parts.push(cs.fail + " failed");
+      if(cs.running) parts.push(cs.running + " running");
+      if(cs.pending) parts.push(cs.pending + " pending");
+      csec.appendChild(el("p", "d-sub", parts.join(MDOT)));
+      var ul = el("ul");
+      var GLYPH = {pass:"\u2713", fail:"\u2717", running:"\u25d0", pending:"\u25cb"};
+      it.checks.forEach(function(k){
+        if(!k || typeof k !== "object") return;
+        var s = String(k.status || "pending").toLowerCase(); if(!GLYPH[s]) s = "pending";
+        var li = el("li", "check " + s);
+        var g = el("span", "glyph", GLYPH[s]); g.setAttribute("aria-hidden", "true");
+        li.appendChild(g);
+        li.appendChild(el("span", "cname", str(k.name) || "check"));
+        li.appendChild(el("span", "cstatus", s));
+        if(str(k.text)) li.appendChild(el("span", "ctext", str(k.text)));
+        ul.appendChild(li);
+      });
+      csec.appendChild(ul);
+      dBody.appendChild(csec);
+    }
+
+    // History
+    if(Array.isArray(it.history) && it.history.length){
+      hasMore = true;
+      var hsec = el("section", "d-section");
+      hsec.appendChild(el("h3", null, "History"));
+      var ol = el("ol", "hist");
+      var hist = it.history.filter(function(x){ return x && typeof x === "object"; });
+      hist.forEach(function(hx, i){
+        var stageKnown = KNOWN[hx.stage];
+        var li = el("li", "st-" + (stageKnown ? hx.stage : "none"));
+        var row = el("div", "hrow");
+        var at = num(hx.at);
+        if(at) row.appendChild(el("span", "num", fmtClock(at)));
+        row.appendChild(el("span", "chip stage st-" + (stageKnown ? hx.stage : "none"), stageKnown ? STAGE_TITLE[hx.stage] : (str(hx.stage) || "event")));
+        var next = hist[i+1];
+        var nextAt = next ? num(next.at) : null;
+        if(at && nextAt && nextAt >= at) row.appendChild(el("span", "num", fmtDur(nextAt - at)));
+        else if(at && !next){ var sofar = el("span"); sofar.appendChild(relSpan("dur", at)); sofar.appendChild(document.createTextNode(" so far")); row.appendChild(sofar); }
+        li.appendChild(row);
+        if(str(hx.text)) li.appendChild(el("div", "htext", str(hx.text)));
+        ol.appendChild(li);
+      });
+      hsec.appendChild(ol);
+      dBody.appendChild(hsec);
+    }
+
+    if(!hasMore){
+      dBody.appendChild(el("p", "d-section d-sub", "The Manager has not written details, checks or history for this item yet."));
+    }
+    if(keepScroll) dBody.scrollTop = scrollTop;
+  }
+
+  function openItem(slug){
+    openSlug = slug;
+    renderDetail(slug, false);
+    if(!dlg.open) dlg.showModal();
+  }
+  function closeItem(){
+    openSlug = null;
+    if(dlg.open) dlg.close();
+  }
+  function slugFromHash(){
+    var h = location.hash || "";
+    if(h.indexOf("#item/") !== 0) return null;
+    try { return decodeURIComponent(h.slice(6)); } catch(e){ return h.slice(6); }
+  }
+  function syncFromHash(){
+    var slug = slugFromHash();
+    if(slug) openItem(slug); else closeItem();
+  }
+  window.addEventListener("hashchange", syncFromHash);
+  $("d-close").addEventListener("click", function(){ dlg.close(); });
+  // Native Escape and the close button both end here; drop the hash so a reload does not reopen.
+  dlg.addEventListener("close", function(){
+    openSlug = null;
+    if(slugFromHash()) history.replaceState(null, "", location.pathname + location.search);
+  });
+  // Click on the backdrop closes (the dialog box itself never contains the click target's own rect edge).
+  dlg.addEventListener("click", function(e){
+    if(e.target !== dlg) return;
+    var r = dlg.getBoundingClientRect();
+    var inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    if(!inside) dlg.close();
+  });
+
+  // ---- tick: refresh clock-dependent text without rebuilding ----
+  function tick(){
+    var now = nowS();
+    var rels = document.querySelectorAll("[data-rel]");
+    for(var i = 0; i < rels.length; i++) setRel(rels[i], now);
+    if(current){ renderSummary(current); renderTeam(current, false); }
   }
 
   // ---- poll: re-inject a fresh, cache-busted script tag every POLL_MS ----
@@ -437,30 +1176,35 @@
     s.onload = function(){
       cleanup(s);
       errStreak = 0;
-      try { render(window.TEAM_STATE); } catch(e){ /* keep last good frame */ }
+      try { render(window.TEAM_STATE); } catch(e){ /* keep the last good frame */ }
     };
     s.onerror = function(){
       cleanup(s);
       // Absent or unreadable state.js. One miss can be a transient gap during
       // the Manager's atomic mv; a persistent absence means no run is active
       // (never opened, or finished and cleaned up). Tolerate the blip, then
-      // fall back to the no-run state — the page never errors on absent state.
+      // fall back to the no-run state. The page never errors on absent state.
       errStreak++;
-      if(errStreak >= 2 || !window.TEAM_STATE) showNoRun();
+      if(errStreak >= 2 || !window.TEAM_STATE){ window.TEAM_STATE = undefined; showNoRun(); }
     };
     document.head.appendChild(s);
   }
-  function cleanup(s){
-    if(s && s.parentNode) s.parentNode.removeChild(s);
-  }
+  function cleanup(s){ if(s && s.parentNode) s.parentNode.removeChild(s); }
 
-  // Load state.js once through the same cache-busted path, then poll forever.
-  // Until the first load resolves, show the no-run state rather than a blank.
-  showNoRun();
+  // First load through the same cache-busted path, then poll forever. Until
+  // the first load resolves, the no-run state is showing rather than a blank.
   poll();
   setInterval(poll, POLL_MS);
-  // Re-tick the clock/staleness even if the file is not changing.
-  setInterval(function(){ if(window.TEAM_STATE) render(window.TEAM_STATE); }, 5000);
+  setInterval(tick, TICK_MS);
+  // A deep link opens its item once state has arrived; until then the dialog
+  // explains that no run is active.
+  if(slugFromHash()){
+    var waited = 0;
+    var t = setInterval(function(){
+      waited += 250;
+      if(current || waited >= 4000){ clearInterval(t); syncFromHash(); }
+    }, 250);
+  }
 })();
 </script>
 </body>
