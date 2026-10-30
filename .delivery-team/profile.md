@@ -107,14 +107,13 @@ working on *this* repository.
 - **Stay project-agnostic:** no file may reference any specific consuming
   project, product, or domain the framework has been used on. The only
   permitted usage claim is the README's "thousands of commits" line.
-- **External-engine containment:** engine mechanics (invocation, pools, modes,
-  engine messages) may appear only in `agents/engine-supervisor.md`; every
-  other file may at most point there.
-
-## External implementation engine
-
-- n/a
+- **Engine containment:** how a specific coding CLI is invoked (its flags,
+  model names, output shape) may appear only in that engine's adapter under
+  `adapters/`; every other file speaks of "the engine" and at most points
+  there.
 
 ## Verification environment
 
-- n/a — a plain checkout is everything; there is nothing to run.
+- `uv` and `python3` 3.11+ are present; a plain checkout plus `uv sync` runs
+  the whole gate. Commits on this repository are signed; the merge-clerk's
+  commit-object check requires a verified signature.

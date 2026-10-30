@@ -944,6 +944,20 @@ class Project:
                     new_failures.append(cmd)
         return not new_failures, new_failures
 
+    def record_known_failures(self, patterns: list[str], reason: str) -> None:
+        """Append QA's environment ruling to the known-failures file and commit it explicit-path."""
+        if not patterns or not self.cfg.known_failures:
+            log("no known-failures file configured; QA's environment ruling not recorded")
+            return
+        path = self.root / self.cfg.known_failures
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write(f"# {time.strftime('%Y-%m-%d')} qa: {reason}\n")
+            for pattern in patterns:
+                fh.write(pattern + "\n")
+        git("add", "--", str(path), cwd=self.root)
+        git("commit", "-q", "-m", f"chore(qa): record known failure — {reason[:60]}", "--", str(path), cwd=self.root)
+
     def known_failure_patterns(self) -> list[str]:
         if not self.cfg.known_failures:
             return []
@@ -1628,6 +1642,15 @@ class Orchestrator:
         if not res.ok:
             self.event("error", f"qa run failed: {res.error}")
             self.qa_state = "red; qa role failed to file"
+            return
+        if res.payload.get("message") == "ENVIRONMENT":
+            patterns = [str(x) for x in res.payload.get("patterns", []) if str(x).strip()]
+            reason = str(res.payload.get("reason", ""))
+            failed = [str(c) for c in run.payload.get("failed_commands", [])]
+            self.open_regressions.pop("|".join(sorted(failed)), None)
+            self.housekeep("record known failures", partial(self.p.record_known_failures, patterns, reason))
+            self.qa_state = f"environment fault at {run.tag}: {reason}"
+            self.event("qa-environment", self.qa_state)
             return
         items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
         tag = run.tag

@@ -92,10 +92,8 @@ These bind every component; a component contradicting one is defective.
 7. **State lives in git.** Backlog items are files; work-in-flight is branches
    and worktrees; an item is done when the merging commit deletes its file. Any
    agent's death is recoverable from git alone.
-8. **Verification is honest.** Agents report the exact commands they ran and
-   their outcomes; a verification not run is reported as not run. Sunset-tagged
-   workarounds (`DELETE WHEN …`) mark rules that exist only to route around a
-   current harness limitation, so they are deleted when the cause is gone.
+8. **Verification is honest.** Roles report the exact commands they ran and
+   their outcomes; a verification not run is reported as not run.
 9. **One execution path.** Only the orchestrator talks to an engine, through an
    adapter, and only the orchestrator writes the main working tree — landing
    the sha the Merge-Clerk verified, filing the items roles return, blocking

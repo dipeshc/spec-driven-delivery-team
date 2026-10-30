@@ -528,9 +528,7 @@ wherever it appears: historical narration, references to things that no longer
 exist, clauses that disagree because an edit missed one of them, sections
 nothing consumes, the same rule legislated in two places where one should own
 it and the other point at it. A change that would leave any of these behind is
-incomplete, and a reviewer treats it exactly like any other defect. The one
-sanctioned exception is a deliberately temporary rule, which carries a
-`DELETE WHEN` tag (below) precisely so it cannot ossify.
+incomplete, and a reviewer treats it exactly like any other defect.
 
 ## Notes record mechanics, never permissions
 
@@ -559,14 +557,6 @@ only the permission claims, and cross-reference the note it contradicted.
 Leave a wrong *causal* claim in place with an explicit "this was wrong" note
 rather than deleting it, so nobody re-derives it.
 
-## Sunset-tagged workarounds
-
-Rules that exist only to route around a current harness limitation carry a
-`DELETE WHEN <trigger>` tag at their point of use, so they are removed the
-moment their cause is gone rather than ossifying into doctrine. Keep a live
-table of them in the project profile or alongside the rule itself; review it
-whenever the harness changes.
-
 ## Message schemas — the canonical payload table
 
 A role's final fenced ```json block is its message to the orchestrator; the
@@ -592,11 +582,15 @@ by the orchestrator; any message may carry `notes_for_next_run`.
 | Merge-Clerk → Orchestrator | `LANDABLE` | `{items[], sha, rebased, verification[]}` — the orchestrator fast-forwards the default branch to `sha` |
 | Merge-Clerk → Orchestrator | `MERGE-BLOCKED` / `REBASE-REQUIRED` | `{reason}` (surfaced immediately) / `{items[], branch, base, reason}` (the clerk's rebase hit real conflicts) |
 | Orchestrator → QA | `REGRESSION-REQUEST` | `{tip, failed_commands[], log_path, log_tail, last_green_tip}` — sent only on a **new** full-gate failure; the orchestrator runs the gate itself on every landed tip and filters the known-failures file |
-| QA → Orchestrator | `REGRESSION` / `QA-BLOCKED` | `{items[{filename, body}], first_bad_sha, test}` / `{reason}` |
+| QA → Orchestrator | `REGRESSION` / `ENVIRONMENT` / `QA-BLOCKED` | `{items[{filename, body}], first_bad_sha, test}` / `{patterns[], reason}` (the orchestrator appends the patterns to the known-failures file) / `{reason}` |
 | Orchestrator → consistency check | `RUN-CONSISTENCY` | `{tip}` (trigger only; the pass's scope and audit range are the role's own) |
 | consistency check → Orchestrator | `FINDINGS` | `{items[{filename, body}]}` |
 | Orchestrator → Researcher | `RESEARCH-REQUEST` | `{item, question, item_text}` |
-| Researcher → Orchestrator | `FILED` / `NO-ITEM` | `{items[{filename, body}]}` / `{finding, why}` |
+| Researcher → Orchestrator | `FILED` / `NO-ITEM` | `{items[{filename, body}], confidence, open_questions[]}` / `{finding, why}` |
+| Owner's session → exploration | `EXPLORATION-REQUEST` | `{themes[], constraints[]}` (via `sdt role exploration`) |
+| exploration → Orchestrator | `EXPLORATION-REPORT` | `{branch, spikes[], declined[], exploration_log}` |
+| Owner's session → ui-inspector | `UI-INSPECTOR-REQUEST` | `{}` (via `sdt role ui-inspector --file-items`) |
+| ui-inspector → Orchestrator | `INSPECTION-REPORT` / `INSPECTION-REFUSED` | `{swept, not_covered[], uninspected[], screenshots, cleared[], items[{filename, body}]}` / `{reason}` |
 
 **Exclusive resources** (dev-server ports, a device, a fixture service — the
 profile's Verification environment names them; `config.toml` `[ports]
