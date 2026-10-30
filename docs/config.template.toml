@@ -1,0 +1,91 @@
+# Delivery-team orchestrator configuration — copy to <repo>/.delivery-team/config.toml
+#
+# This file is read by `sdt` (bin/sdt), never by a role. Everything a role needs
+# from it is handed over in the run context of its dispatch prompt, so it never
+# has to parse TOML. Prose a role reads directly — the specification source of
+# truth, content rules, verification environment — lives beside this file in
+# profile.md (see docs/profile.template.md).
+#
+# Every key has a default; an absent key means the default, and a key you do
+# not need can stay absent. Paths are relative to the repository root.
+
+[repo]
+default_branch = "main"
+# Command run once in each freshly created worktree (and again in a persistent
+# worktree when `lockfile` changes). Leave empty when a plain checkout runs.
+install = ""
+lockfile = ""
+
+[backlog]
+dir = "docs/backlog"
+
+[gate]
+# Scoped gate: what a developer runs in its worktree for a normal change, and a
+# reviewer re-runs. Full gate: what QA runs on every new default-branch tip.
+# Each entry is one shell command, run with `sh -c` in the worktree.
+scoped = []
+full = []
+# Repo-wide invariant guards that no scoped gate covers. The orchestrator hands
+# the list to triage, which names the ones an item's change triggers.
+guards = [
+  # { cmd = "pnpm test:fixtures", when = "a change adds or edits test fixtures or sample data" },
+]
+
+[engine]
+# Adapter name: a file adapters/<name>.toml shipped with the framework, or one
+# under <repo>/.delivery-team/adapters/. The CLI it names must be on PATH.
+default = "claude"
+# Per-role engine override, e.g. developer = "codex".
+[engine.roles]
+# developer = "codex"
+# Model per capability tier, overriding the adapter's defaults. An empty value
+# omits the model flag so the engine's own default applies.
+[engine.tiers]
+# frontier = "opus"
+# mid = "sonnet"
+# small = "haiku"
+
+[limits]
+max_parallel_developers = 2
+# Reviewer instances; each gets its own persistent worktree reviewer-<n>.
+reviewers = 1
+# CHANGES-REQUESTED rounds an item may take before triage decides its fate.
+review_rounds = 3
+# Wall-clock seconds per role run; the orchestrator kills and re-dispatches.
+[limits.timeouts]
+manager = 900
+developer = 3600
+reviewer = 1800
+merge-clerk = 900
+qa = 1800
+researcher = 1800
+consistency-check = 1800
+exploration = 7200
+ui-inspector = 3600
+qa_gate = 3600
+[limits.liveness]
+poll_seconds = 5
+# A run whose output has not grown for this long is treated as dead.
+stall_seconds = 900
+# Times a dead developer run is re-dispatched with adopt before the item blocks.
+adopt_attempts = 2
+
+[qa]
+# File of substring patterns (one per line, # comments) naming failures that
+# are already known; only a failure matching none of them is a regression.
+known_failures = ""
+# Dispatch the consistency-check role every N merges (0 = never).
+consistency_every = 5
+
+[ports]
+# true when the gate has port-bound or exclusive-resource layers: at most one
+# item holding `ports` is then in flight from dispatch to MERGED.
+exclusive = false
+
+[worktrees]
+dir = ".delivery-team/worktrees"
+branch_prefix = "item/"
+
+[board]
+enabled = true
+dir = ".delivery-team/progress"

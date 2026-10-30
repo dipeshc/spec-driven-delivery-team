@@ -4,3 +4,10 @@
 .delivery-team/*
 !.delivery-team/profile.md
 !.delivery-team/config.toml
+
+# Python tooling caches
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

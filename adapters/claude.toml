@@ -1,0 +1,25 @@
+# Engine adapter: Claude Code (`claude`). Tested.
+#
+# A headless print-mode run. Approvals are bypassed because the run is confined
+# by its working directory plus the explicit add-dirs, never by the engine's
+# sandbox; the orchestrator enforces the wall-clock timeout itself.
+name = "claude"
+tested = true
+network = true
+vision = true
+
+command = ["claude", "-p", "--output-format", "json", "--permission-mode", "bypassPermissions"]
+model_args = ["--model", "{model}"]
+add_dir = { flag = "--add-dir", style = "once" }
+prompt = "stdin"
+stdin_args = []
+# The final message is the `result` key of the JSON object on stdout, valid
+# only when `subtype` is `success`.
+output = "json:result"
+success = { key = "subtype", value = "success" }
+timeout_exit_codes = []
+
+[tiers]
+frontier = "opus"
+mid = "sonnet"
+small = "haiku"

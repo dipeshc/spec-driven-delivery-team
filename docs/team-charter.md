@@ -1,17 +1,20 @@
 # Team charter — shared rules for every delivery-team agent
 
-This is the single source of the rules every team agent obeys — the Manager,
-the Developers, the Reviewers, the Merge-Clerk, the QA, the Engine-Supervisor,
-and a root-dispatched Researcher. Each agent file references this charter
-instead of restating these rules; where an agent adds a role-specific twist it
-says so at its own point of use. When this charter and an agent file disagree,
-the more specific agent file wins for that role, but the invariants below
-(writers, verification) are floor rules no role overrides.
+This is the single source of the rules every team role obeys — the Manager,
+the Developers, the Reviewer, the Merge-Clerk, the QA, the Researcher and the
+consistency check — and the orchestrator that runs them. Each role file
+references this charter instead of restating these rules; where a role adds a
+role-specific twist it says so at its own point of use. When this charter and a
+role file disagree, the more specific role file wins for that role, but the
+invariants below (writers, verification) are floor rules no role overrides.
 
 **This charter is generic and identical for every project.** Everything
-project-specific — quality-gate commands, backlog location, invariant guards,
-parity requirements, content rules — lives in that project's
-`.delivery-team/profile.md`. See [Project profile](#project-profile--read-it-first).
+project-specific lives in that project's `.delivery-team/` directory: the
+machine-read `config.toml` (gate commands, backlog location, engine, limits)
+that the orchestrator hands to every role in its run context, and the prose
+`profile.md` (specification source of truth, invariant guards, content rules,
+verification environment) that roles read directly. See
+[Project profile](#project-profile--read-it-first).
 
 ## Project profile — read it first
 
@@ -19,15 +22,15 @@ Your first act on any project is to read `<repo>/.delivery-team/profile.md`.
 It is authoritative for that project's specifics, and it is the only place they
 live. A section marked `n/a` genuinely means "no such requirement here" — never
 invent a rule to fill it, and never carry a convention over from another
-project. If the file is missing, say so and ask rather than guessing; a wrong
-assumption about the quality gate or the backlog convention wastes a whole
-cycle.
+project. If the file is missing, say so in your result rather than guessing; a
+wrong assumption about the quality gate or the backlog convention wastes a
+whole cycle.
 
 ## Read only what governs your task
 
 Read the project's index/entry doc, then the specific sections it points to
 that govern your assignment — not the whole documentation tree. A blanket
-"read everything before acting" is a large fixed cost paid on every spawn.
+"read everything before acting" is a large fixed cost paid on every run.
 When genuinely unsure whether a section governs your item, read it:
 under-reading and missing an invariant is the failure this rule
 guards against, not over-reading by default. No skimming what you do read, and
@@ -80,61 +83,78 @@ looked like, needs a real design decision, or resists a quick root-cause pass.
 Escalation is cheap and expected; discovering at review time that a risky change
 skipped review is not.
 
-## Capability gate
+## Role runs — how every role executes
 
-Judgment roles (Manager, Reviewer, Merge-Clerk, QA, Researcher) require a
-frontier model — the strongest available tier, never a small/fast one. State
-your model as your first action; if you cannot confidently determine your
-identity or you are a small model, **STOP** and say so plainly — spawn nothing,
-touch nothing. (Developer is exempt: a mid-tier model is a valid assignment;
-still state your model for the ledger. The Engine-Supervisor is also exempt —
-it only orchestrates, and the reasoning is the external engine's.)
+Every role runs as one headless process of the project's configured engine,
+started by the orchestrator (`bin/sdt`) and confined to the working directory
+it was given: an item worktree for a Developer, a detached worktree for every
+other role. The orchestrator is the only component that talks to an engine,
+through an adapter (`adapters/<engine>.toml`) that says how to run that CLI
+headless; a role never invokes an engine, never spawns another role, and never
+messages one.
 
-> DELETE WHEN model frontmatter pinning is reliable — this gate exists only
-> because a spawned agent cannot always be pinned to a model.
+**The prompt.** A run's prompt is the role file's body, then a run context the
+orchestrator writes (the working directory, the repository root, the default
+branch, the paths of this charter and the profile, the backlog and worktree
+locations, the gate commands and invariant guards from `config.toml`, the role's
+notes file), then the dispatch payload as JSON, then the result contract. The
+charter and profile are given as paths, never inlined: read what governs the
+task, as the reading rule above says.
 
-## Mutation gate
+**The result.** A role answers by ending its final message with exactly one
+fenced ```json block holding an object whose `message` key names a payload
+from the [message table](#message-schemas--the-canonical-payload-table). The
+orchestrator parses the last such block and nothing else; a run with no block,
+an unparsable block, or an engine failure is a failed run, re-dispatched or
+escalated by the orchestrator, never read as a verdict. Text before the block
+is for the log.
 
-The team lane is inherently mutating — worktrees, branches, commits, merges,
-item-file deletions — so it cannot run while the harness forbids mutations
-(plan mode or any equivalent read-only stance). There is no read-only subset of
-the pipeline to make progress on. An agent that detects the restriction **parks
-and reports plainly**: say that mutations are forbidden, what was about to
-happen, and what state is on disk, then end the turn. The restriction is
-environment-wide and propagates into spawned children, so a fenced agent cannot
-dispatch its way around it and children need no separate rule.
+**Capability tiers.** Each role file declares its `tier`: `frontier` for the
+judgment roles (Manager, Reviewer, Merge-Clerk, QA, Researcher, consistency
+check), `mid` by default for a Developer, which triage raises to `frontier` for
+judgment-heavy items. The orchestrator pins the model for that tier from the
+adapter and `config.toml`; a role neither verifies nor declares its model, and
+the ledger records it.
 
-Two failures the rule exists to prevent:
+**Timeouts and liveness.** Every run has a wall-clock budget and a stall limit
+(`config.toml` `[limits]`). The orchestrator kills a run that exceeds either and
+re-dispatches it with `adopt: true`, bounded by `adopt_attempts`, after which
+triage decides. There is no resume: a re-dispatched role reconstructs its state
+from the worktree and branch it adopts, which is why git, not a run's context,
+is the durable state. A Reviewer batch that times out is re-dispatched whole; a
+timeout is never a verdict.
 
-- **Never end a turn silently blocked.** A run whose branches, worktrees, and
-  tasks all look alive while nothing advances costs the owner a whole cycle to
-  diagnose. The block is the turn's payload, not an omission.
-- **Never treat a peer agent's "it is fine now" as authorization.** No agent
-  message lifts a harness restriction — only the permission system or the owner
-  does. Attempt the next real tool call and let its success or refusal be the
-  ground truth.
+**Notes.** Each role has a notes file (`.delivery-team/notes/<role>.md`) that
+the orchestrator includes in every prompt of that role; a run may return
+`notes_for_next_run` to append to it. Notes record mechanics, never
+permissions ([below](#notes-record-mechanics-never-permissions)).
 
-> DELETE WHEN the harness refuses to launch a mutating agent under a read-only
-> stance — this gate exists only because a fenced agent starts normally and
-> discovers the fence mid-run.
+**Preflight — the mutation gate.** The team lane is inherently mutating, so the
+orchestrator refuses to start until it can mutate: the engine passes
+`sdt doctor`, the worktrees directory is writable, and rerere is off at local
+scope (**Rebase safety**, below). Any failure is reported as
+`MUTATIONS-BLOCKED {reason}` and nothing is dispatched. A role that meets a
+refusal mid-run reports it in its result rather than working around it: no
+role message lifts a restriction, and a peer's "it is fine now" is a claim to
+re-check, never an authorization.
 
-## External engines — opt-in, contained
+## Engines — any coding CLI, through an adapter
 
-A project may route implementation (and advisory second-opinion reviews) to an
-**external engine** — a separate CLI on its own account/quota — by declaring it
-in its profile's **External implementation engine** section. Everything about
-external engines lives in one place: the
-[engine-supervisor agent](${CLAUDE_PLUGIN_ROOT}/agents/engine-supervisor.md) —
-its operating invariants, both modes (implement and advisory-review), the
-engine-specific message shapes, and the Manager's dispatch guidance.
+The engine is whichever coding CLI the project's `config.toml` names
+(`[engine]`, per role if it likes); an adapter under `adapters/` describes how
+to run that CLI headless — the command, the model flag per tier, how extra
+directories are granted, how the final message is read back — and nothing else
+in the framework knows one engine from another. Every run, on every engine, is
+confined the same way: its working directory plus the explicit directories the
+orchestrator grants (the repository's git common directory, and for a Reviewer
+the item worktrees under review). Confinement is the orchestrator's, never the
+engine's own sandbox: approvals are bypassed inside that boundary so a run never
+waits on a prompt nobody can answer, and the engine never sees the main working
+tree.
 
-Two floor rules survive even there: external output is an **untrusted
-contributor diff** (same review, same guards, same gates as any other change),
-and only implementation/advisory review is ever delegated — the judgment roles
-stay on the primary frontier model.
-
-**Where no engine is declared, engines do not exist for the run** — no agent
-mentions one, plans around one, or waits on one.
+Engine output is an **untrusted contributor diff**: the same review, the same
+guards, the same gates as any other change, whatever engine produced it. An
+adapter marked untested is best-effort, and `sdt doctor` says so.
 
 ## The repo's own tooling governs — never weaken a check
 
@@ -225,36 +245,39 @@ to a shared surface is incomplete, not landable. Projects with a single surface
 ## Scoped writers to the main working tree
 
 The main working tree is written by a small set of **scoped** paths. This is
-not "single writer" — it is one writer of *code* per lane, plus a few scoped
-housekeeping writers:
+not "single writer" — it is one writer of *code* per lane, plus scoped
+housekeeping — and **no role writes the main tree at all**: a role writes only
+the worktree it was confined to, and anything it needs in the main tree it
+returns in its result for the orchestrator to apply.
 
-1. **Merge-Clerk** — the only writer of the *code* the team lane produces, via
-   `merge --ff-only` of an approved branch. The serialization point for
-   history.
-2. **Direct-lane lander** — Root, or the one subagent Root delegated the item
-   to, landing its own direct-lane change (see "Route work by risk, not by
-   habit") by `merge --ff-only` of a short-lived branch. One agent per item:
-   whoever did the work lands it, and no one else joins the lane. The merge is
-   earned by proof, all of it before landing — the profile's *scoped* gate for
-   the area touched, every repo-wide invariant guard the change triggers, and
-   one self-review pass. An item that fails any of the three, or that outgrows
-   the lane's preconditions (single-area, small diff, existing coverage, no
+1. **The orchestrator, landing team-lane code** — the only writer of the
+   *code* the team lane produces: `merge --ff-only` of the sha the Merge-Clerk
+   reported `LANDABLE`, performed in the main tree, with the owner's own
+   uncommitted edits untouched. The Merge-Clerk judges landability (clean
+   fast-forward, re-verified after any rebase, commit object checked); the
+   orchestrator performs the merge, because only it may write the main tree.
+2. **Direct-lane lander** — the owner's own session, landing its own
+   direct-lane change (see "Route work by risk, not by habit") by
+   `merge --ff-only` of a short-lived branch. One agent per item: whoever did
+   the work lands it, and no one else joins the lane. The merge is earned by
+   proof, all of it before landing — the profile's *scoped* gate for the area
+   touched, every repo-wide invariant guard the change triggers, and one
+   self-review pass. An item that fails any of the three, or that outgrows the
+   lane's preconditions (single-area, small diff, existing coverage, no
    security/data-model/cross-cutting implications), escalates to the team lane
-   instead of landing. The QA's full-gate run on the new tip is this lane's
+   instead of landing. The QA full-gate run on the new tip is this lane's
    independent verification; it is not a licence to skip the three.
-3. **QA** — its own loop mechanics and filed backlog findings, explicit-path
-   only.
-4. **Root** — backlog item files and the framework files under `.delivery-team/`,
-   explicit-path only.
-5. **Researcher** — backlog item files, explicit-path only.
-6. **Manager** — housekeeping that touches no working code: moving a backlog
-   item to `blocked/`, worktree/branch lifecycle, and the **progress ledger**
-   (`<repo>/.delivery-team/progress/state.js`, plus an optional `state.json` twin
-   and the copied `dashboard.html` beside them) — runtime state written on every
-   reconcile, never committed and kept out of version control. Its schema is the
-   "Progress ledger" section below; the Manager is its sole writer. Never a
-   content edit. The Manager is the **only** role that removes an item worktree
-   or deletes an item branch; a developer leaves both on disk and reports.
+3. **The orchestrator, housekeeping** — writes that touch no working code,
+   every one explicit-path: backlog item files returned by the QA, Researcher
+   or consistency check as `{filename, body}` pairs; moving an item to
+   `blocked/` with its reason appended; worktree and branch lifecycle; and the
+   **progress ledger** (`<repo>/.delivery-team/progress/state.js`, its
+   `state.json` twin and the copied `dashboard.html`) — runtime state written
+   on every tick, never committed. The orchestrator is the **only** writer
+   that removes an item worktree or deletes an item branch; a role leaves both
+   on disk and reports.
+4. **The owner's session** — backlog item files and the framework files under
+   `.delivery-team/`, explicit-path only.
 
 The project profile's "sanctioned direct-write paths" section names the exact
 paths for that repo: it scopes the housekeeping writes made straight to the
@@ -263,20 +286,19 @@ wherever the lane's own conditions are met. Every non-merge path is
 **explicit-path only** — `git add <path>`, never `git add -A`. Anyone else
 writing to the main tree is off the rails.
 
-**Pushing is the root instance's, alone.** Root pushes the default branch after
-landings, on the owner's standing instruction; no team agent pushes. So the
-remote tracking ref advancing to a commit already on the local default branch
-is root's push and is accounted for — not evidence of a foreign writer. Any
-other remote movement (a tip the local branch does not contain, a force-push, a
-deleted ref) remains reportable exactly as before.
+**Pushing is the owner's session's, alone.** The orchestrator never pushes, and
+no role pushes; the owner's session pushes the default branch after landings,
+on the owner's standing instruction. So the remote tracking ref advancing to a
+commit already on the local default branch is that push and is accounted for —
+not evidence of a foreign writer. Any other remote movement (a tip the local
+branch does not contain, a force-push, a deleted ref) remains reportable.
 
 ## Progress ledger — the run's machine-readable state
 
-The Manager (its sole writer, per the scoped-writers entry above) mirrors its
-in-context ledger and git reconciliation to
-`<repo>/.delivery-team/progress/state.js` on **every reconcile/poll**, not on the
-report cadence — a continuously-rendering surface needs fresh state between
-reports. The file is a single statement, `window.TEAM_STATE = { … };`, written
+The orchestrator (its sole writer, per the scoped-writers entry above) mirrors
+its pipeline state and git reconciliation to
+`<repo>/.delivery-team/progress/state.js` on **every tick**, not on a report
+cadence — a continuously-rendering surface needs fresh state between reports. The file is a single statement, `window.TEAM_STATE = { … };`, written
 **atomically** (write a temp file, `mv` it into place) so no reader ever sees a
 half-written frame. It lives under `.delivery-team/`, is never committed, and is
 disposable: it is a projection of git plus the ledger, so deleting it costs
@@ -286,10 +308,8 @@ JSON wrapped mechanically (`window.TEAM_STATE = ` + the JSON + `;`).
 
 This schema is the **single contract** every consumer reads (the shipped
 `dashboard.html`, any status line, any future renderer); a consumer never
-redefines it. Every field is derivable from data the Manager already holds, so
-the write is one shell heredoc. Readers must treat every field as optional and
-degrade gracefully — an older or partial writer must never make a renderer
-error.
+redefines it. Readers must treat every field as optional and degrade gracefully — an older
+or partial writer must never make a renderer error.
 
 ```js
 window.TEAM_STATE = {
@@ -304,8 +324,8 @@ window.TEAM_STATE = {
       slug: "some-item-slug",
       priority: "P2",               // filename priority, or a grouped label e.g. "P0 ×2 + P1"
       stage: "review",              // ENUM: queued | implementing | review | landing | done | blocked
-      agent: "reviewer-1",          // assigned agentId / role, or "—"
-      model: "opus",                // model tier of the assigned agent, or "—"
+      agent: "reviewer-1",          // assigned role instance, or "—"
+      model: "opus",                // model of the assigned run, or "—"
       branch: "item/some-item-slug",
       head:   "1ba9449c",           // branch tip sha (any length; the page shortens)
       stageEnteredAt: 1723644644,   // epoch seconds the item entered its current stage
@@ -348,11 +368,11 @@ window.TEAM_STATE = {
 ```
 
 The optional per-item `eta`, `dependsOn`, `detail`, `checks` and `history`
-fields, and the run-level `eta`, were added 2026-09-25 so a board can open an
-item and answer "what is happening to this one and when does it land" without
-the reader asking the Manager; the Manager fills them from the same ledger its
-report table is built from (the ETA column, the stage-elapsed column, the
-verification counts it quotes) and leaves any it cannot fill absent.
+fields, and the run-level `eta`, let a board open an item and answer "what is
+happening to this one and when does it land" without the reader asking anyone;
+the writer fills them from what it holds (the developer's verification list
+becomes `checks`, stage transitions become `history`) and leaves any it cannot
+fill absent.
 
 The `stage` enum is the load-bearing field: it is what a board groups into
 lifecycle columns and what a status line aggregates into counts, so it is the
@@ -404,16 +424,20 @@ The framework defaults, so commands in agent files are literal and
 copy-pasteable rather than placeholder-laced:
 
 - **Item branches:** `item/<slug>` — so `git branch --list 'item/*'` reliably
-  enumerates in-flight work.
-- **Worktrees:** one per item, created by the agent that owns it, named for the
-  item, removed by the Manager (see
-  [Scoped writers](#scoped-writers-to-the-main-working-tree)).
+  enumerates in-flight work. A **group** assigned at triage shares one branch,
+  `item/<first-slug>`, and one commit; every grouped slug travels in the
+  dispatch and the ledger, and the commit deletes every grouped item's file.
+- **Worktrees:** one per item, `dev-<slug>` under the worktrees directory,
+  created from the live default branch by the orchestrator before the
+  Developer runs and removed by the orchestrator after the item lands (see
+  [Scoped writers](#scoped-writers-to-the-main-working-tree)). The persistent
+  `reviewer-<n>`, `merge-clerk` and `qa` worktrees are detached and reset to a
+  known-clean state before every run.
 - **Landing:** fast-forward only, one commit per item, linear history.
 
-A project may override any of these in its profile's **Worktree layout**
-section; where it does, the profile wins and agents use its values. Where the
-profile is silent, these defaults apply — do not treat a silent profile as
-undefined.
+A project may override the directory and the branch prefix in its
+`config.toml` `[worktrees]` table; where it does, those values apply. Where it
+is silent, these defaults apply — do not treat a silent config as undefined.
 
 ### Deleting a landed branch — prove, then delete
 
@@ -434,13 +458,13 @@ upstream) or `+` (it is not). **Only `-` lines** — no `+` line anywhere — pr
 the branch's content is fully landed, and `git branch -D` is then sanctioned,
 not a policy violation. Read the lines, never the exit status: `git cherry`
 exits `0` either way. A single `+` line means the forced delete would destroy
-work, so the refusal stands: the Manager leaves the branch and reports it. The
-ordering is the rule — prove first, delete second, never force first and justify
-afterwards.
+work, so the refusal stands: the orchestrator leaves the branch and reports
+it. The ordering is the rule — prove first, delete second, never force first
+and justify afterwards.
 
-This is a distinct path from the Manager's rescue-then-force route for a worker
-believed dead, which preserves that worker's uncommitted work before forcing
-anything. That route is untouched and this clause does not widen it: this one
+This is a distinct path from the orchestrator's rescue-then-force route for a
+run that died or was killed, which preserves the worktree's uncommitted work on
+a `rescue/<slug>` branch before forcing anything. That route is untouched and this clause does not widen it: this one
 covers only a branch whose content is provably landed.
 
 ## Rebase safety — rerere stays off
@@ -451,15 +475,15 @@ resolutions is off: a shared `rr-cache` can silently auto-apply a stale recorded
 resolution, producing a rebase that looks clean and is wrong. The failure surfaces
 as a landed commit that dropped or altered a line nobody touched.
 
-**The setting is verified, never assumed.** The Manager reads the effective value
-at startup, alongside the capability and mutation gates:
+**The setting is verified, never assumed.** The orchestrator reads the
+effective value at preflight, as part of the mutation gate:
 
 ```
 git -C <repo> config --get rerere.enabled
 ```
 
-Anything other than `false` (including unset) is non-compliant, and the Manager
-sets it at **local** scope before spawning anything:
+Anything other than `false` (including unset) is non-compliant, and the
+orchestrator sets it at **local** scope before dispatching anything:
 
 ```
 git -C <repo> config --local rerere.enabled false
@@ -468,8 +492,8 @@ git -C <repo> config --local rerere.enabled false
 It sets rather than merely reporting because every project this framework runs
 on requires the value — there is nothing for an owner to adjudicate, and a
 report-only run must either stall or proceed knowingly unsafe. The write is
-confined to one repo and trivially undone, and the Manager names it in its first
-status report so the change is never silent.
+confined to one repo and trivially undone, and the orchestrator records it as
+the run's first event so the change is never silent.
 
 **Local scope is the boundary.** `--local` only. The owner's global and system
 git config are outside every project's authority: no agent modifies them, and a
@@ -508,12 +532,12 @@ incomplete, and a reviewer treats it exactly like any other defect. The one
 sanctioned exception is a deliberately temporary rule, which carries a
 `DELETE WHEN` tag (below) precisely so it cannot ossify.
 
-## Agent memory records mechanics, never permissions
+## Notes record mechanics, never permissions
 
-Anything you write to your own persistent memory is read by a **future session
-that has none of today's context**. So memory carries *how this repo behaves* —
-commands, traps, file layouts, failure signatures — and never *what you were
-allowed to do*.
+Anything you return in `notes_for_next_run` is appended to your role's notes
+file and read by a **future run that has none of today's context**. So notes
+carry *how this repo behaves* — commands, traps, file layouts, failure
+signatures — and never *what you were allowed to do*.
 
 The test, applied at write time: **if a note would make a future session not
 report something it observed, it is a permission — drop it.**
@@ -530,8 +554,8 @@ at read time a different session parses the identical sentence as *"this is
 fine"*, and nothing in the wording marks the boundary. An agent acting in good
 faith can silently disarm a guard the owner cares about.
 
-When you correct another agent's memory, keep its mechanics verbatim, remove
-only the permission claims, and cross-reference the memory it contradicted.
+When you correct another role's notes, keep its mechanics verbatim, remove
+only the permission claims, and cross-reference the note it contradicted.
 Leave a wrong *causal* claim in place with an explicit "this was wrong" note
 rather than deleting it, so nobody re-derives it.
 
@@ -545,31 +569,38 @@ whenever the harness changes.
 
 ## Message schemas — the canonical payload table
 
-Children end their turn to talk to their spawner (their final text is the
-payload); they are resumed with SendMessage. Every message conforms to one of
-these shapes. The reviewer/merge-clerk split (review decoupled from merge)
-means an APPROVED verdict and a MERGED result are distinct messages from
-distinct roles.
+A role's final fenced ```json block is its message to the orchestrator; the
+orchestrator's dispatch payload is its message to a role. Every message
+conforms to one of these shapes. The reviewer/merge-clerk split (review
+decoupled from landing) means an APPROVED verdict, a LANDABLE finding and the
+orchestrator's landing are distinct steps by distinct parties. Items a role
+wants filed travel as `items: [{filename, body}]` and are written and committed
+by the orchestrator; any message may carry `notes_for_next_run`.
 
 | From → To | Message | Payload |
 |---|---|---|
-| Developer → Manager | `READY-FOR-REVIEW` | `{item(s), branch, worktree, head, rebased_onto, single_commit, verification[], ports_used, notes}` |
-| Developer → Manager | `BLOCKED` | `{item, branch, worktree, reason, needs}` |
-| Developer → Manager | `CLOSED` | `{item}` (after SHUTDOWN) |
-| Manager → Reviewer | `REVIEW-REQUEST` | `{item(s), item_text, branch, worktree, head, verification, ports, advisory_findings[]?}` |
-| Reviewer → Manager | `APPROVED` | `{item(s), branch, head, verification[], notes}` (states each grouped item reviewed individually) |
-| Reviewer → Manager | `CHANGES-REQUESTED` | `{item, branch, comments[], required[]}` |
-| Reviewer → Manager | `REBASE-REQUIRED` | `{item, branch, base, reason}` |
-| Manager → Merge-Clerk | `MERGE-REQUEST` | `{item(s), branch, head}` |
-| Merge-Clerk → Manager | `MERGED` | `{item(s), sha, land_desync_healed}` |
-| Merge-Clerk → Manager | `MERGE-BLOCKED` | `{reason}` (surfaced to Root immediately) |
-| Merge-Clerk → Manager | `REBASE-REQUIRED` | `{item, branch, base, reason}` (clerk rebase hit real conflicts) |
-| Manager → Developer | `FEEDBACK` / `REBASE` / `SHUTDOWN` | `{branch, comments, required[]}` / `{branch, onto}` / `{merged_sha \| reason}` |
-| Manager → QA | `RUN-CONSISTENCY` | `{}` (trigger only; the pass's scope and audit range are QA's own) |
-| QA → Manager | `REGRESSION` / `QA-GREEN` / `QA-BLOCKED` | `{item_file, first_bad_sha, test}` / `{tip, cycles}` / `{reason}` |
-| Agent → Manager | `PORTS-REQUEST` / Manager → Agent | `PORTS-GRANT` | `{item, branch}` / `{item, granted: bool, ports[]}` — the exclusive-resource lease (ports, devices, fixture services) named in the profile's Verification environment; only one holder at a time |
+| Orchestrator → Manager | `TRIAGE-REQUEST` | `{items[{slug, priority, path, text}], in_flight[{slug, stage, branch, ports}], guards[{cmd, when}], ports_exclusive, engine_network}` |
+| Manager → Orchestrator | `TRIAGE` | `{items[{slug, action: dispatch \| hold \| block \| research, tier, ports, group[], governing_docs[], guards[], sharpen_first, reason}]}` — one entry per new item; `group` names the siblings landing with it |
+| Orchestrator → Manager | `DECISION-REQUEST` | `{event, item, items[], branch, rounds, detail, item_text}` — `event` is `BLOCKED`, `DEVELOPER-FAILED`, `REVIEW-ROUNDS-EXCEEDED`, `MERGE-BLOCKED`, `MERGE-CLERK-FAILED`, `UNEXPECTED-PAYLOAD` or `UNEXPECTED-VERDICT` |
+| Manager → Orchestrator | `DECISION` | `{action: block \| retry \| adopt, reason}` |
+| Orchestrator → Developer | `IMPLEMENT` | `{items[{slug, path, text}], branch, worktree, base, adopt, ports, governing_docs[], guards[], sharpen_first, scoped_gate[], resume?}` — `resume` carries `FEEDBACK {comments[], required[]}`, `REBASE {onto}`, `RETRY {reason}` or `ADOPT {reason}` |
+| Developer → Orchestrator | `READY-FOR-REVIEW` | `{items[], branch, worktree, head, rebased_onto, single_commit, verification[{cmd, result}], ports_used, notes}` |
+| Developer → Orchestrator | `BLOCKED` | `{item, branch, worktree, reason, needs}` |
+| Orchestrator → Reviewer | `REVIEW-REQUEST` | `{requests[{items[], item_text, branch, worktree, head, verification[], ports, notes}], base, reviewer_worktree, scoped_gate[]}` — every READY item waiting when the Reviewer is free, in one batch |
+| Reviewer → Orchestrator | `REVIEW-VERDICTS` | `{verdicts[]}`, one per request: `APPROVED {items[], branch, head, verification[], notes}` (each grouped item reviewed individually) / `CHANGES-REQUESTED {items[], branch, comments[], required[]}` / `REBASE-REQUIRED {items[], branch, base, reason}` |
+| Orchestrator → Merge-Clerk | `MERGE-REQUEST` | `{items[], branch, head, base, scoped_gate[], guards[], item_paths[]}` |
+| Merge-Clerk → Orchestrator | `LANDABLE` | `{items[], sha, rebased, verification[]}` — the orchestrator fast-forwards the default branch to `sha` |
+| Merge-Clerk → Orchestrator | `MERGE-BLOCKED` / `REBASE-REQUIRED` | `{reason}` (surfaced immediately) / `{items[], branch, base, reason}` (the clerk's rebase hit real conflicts) |
+| Orchestrator → QA | `REGRESSION-REQUEST` | `{tip, failed_commands[], log_path, log_tail, last_green_tip}` — sent only on a **new** full-gate failure; the orchestrator runs the gate itself on every landed tip and filters the known-failures file |
+| QA → Orchestrator | `REGRESSION` / `QA-BLOCKED` | `{items[{filename, body}], first_bad_sha, test}` / `{reason}` |
+| Orchestrator → consistency check | `RUN-CONSISTENCY` | `{tip}` (trigger only; the pass's scope and audit range are the role's own) |
+| consistency check → Orchestrator | `FINDINGS` | `{items[{filename, body}]}` |
+| Orchestrator → Researcher | `RESEARCH-REQUEST` | `{item, question, item_text}` |
+| Researcher → Orchestrator | `FILED` / `NO-ITEM` | `{items[{filename, body}]}` / `{finding, why}` |
 
-External-engine messages (`ENGINE-UNAVAILABLE`, `ENGINE-LAUNCH-FAILED`,
-`REBASE-CONFLICT`, `ADVISORY-FINDINGS`) are defined in the
-[engine-supervisor agent](${CLAUDE_PLUGIN_ROOT}/agents/engine-supervisor.md)
-and apply only to runs whose project profile declares an external engine.
+**Exclusive resources** (dev-server ports, a device, a fixture service — the
+profile's Verification environment names them; `config.toml` `[ports]
+exclusive` declares that they exist) are granted in the dispatch (`ports:
+true`) and never requested mid-run: a headless run cannot ask. When exclusive,
+at most one item holding them is in flight from dispatch to landing, and the
+QA gate waits for that slot.

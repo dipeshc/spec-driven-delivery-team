@@ -1,0 +1,31 @@
+# Development tooling only. The orchestrator (bin/sdt) has no runtime
+# dependencies beyond python3; this file exists so `uv run` can lint, type-check
+# and test it.
+[project]
+name = "spec-driven-delivery-team"
+version = "0.1.0"
+description = "A docs-driven autonomous delivery team that runs on any coding CLI"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.ruff]
+line-length = 120
+include = ["bin/sdt", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+scripts_are_modules = true
+files = ["bin/sdt", "tests"]
+strict = false
+check_untyped_defs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

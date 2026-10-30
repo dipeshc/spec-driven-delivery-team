@@ -1,0 +1,19 @@
+# Engine adapter for the test stub: plays every role from the dispatch payload
+# with no model behind it. `{framework}` is the framework root.
+name = "fake"
+tested = true
+network = true
+vision = true
+
+command = ["python3", "{framework}/tests/fake_engine.py"]
+model_args = ["--model", "{model}"]
+add_dir = { flag = "--add-dir", style = "repeat" }
+prompt = "stdin"
+stdin_args = []
+output = "text"
+timeout_exit_codes = [53]
+
+[tiers]
+frontier = "fake-frontier"
+mid = "fake-mid"
+small = "fake-small"

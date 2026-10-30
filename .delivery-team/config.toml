@@ -1,0 +1,23 @@
+# Orchestrator configuration for this repository (it dogfoods the framework).
+# Keys absent here take the defaults documented in docs/config.template.toml.
+
+[repo]
+default_branch = "main"
+install = "uv sync --quiet"
+lockfile = "uv.lock"
+
+[backlog]
+dir = "docs/backlog"
+
+[gate]
+scoped = ["uv run ruff check bin/sdt tests", "uv run pytest -q tests/test_units.py"]
+full = ["uv run ruff format --check bin/sdt tests", "uv run ruff check bin/sdt tests", "uv run mypy", "uv run pytest -q"]
+
+[engine]
+default = "claude"
+
+[limits]
+max_parallel_developers = 2
+
+[qa]
+consistency_every = 3

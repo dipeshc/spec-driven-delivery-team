@@ -1,0 +1,24 @@
+# Engine adapter: Gemini CLI (`gemini -p`). Tested.
+#
+# `-p ""` selects headless mode; the prompt arrives on stdin and the empty
+# prompt is appended to it. `--skip-trust` avoids the fatal untrusted-workspace
+# error in a fresh worktree. Exit code 53 is the engine's own turn limit and is
+# treated as a timeout.
+name = "gemini"
+tested = true
+network = true
+vision = true
+
+command = ["gemini", "-p", "", "--approval-mode", "yolo", "--skip-trust", "-o", "json"]
+model_args = ["-m", "{model}"]
+add_dir = { flag = "--include-directories", style = "comma" }
+prompt = "stdin"
+stdin_args = []
+output = "json:response"
+timeout_exit_codes = [53]
+
+# Empty = the engine's default model for every tier; override in config.toml.
+[tiers]
+frontier = ""
+mid = ""
+small = ""

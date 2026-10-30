@@ -10,14 +10,18 @@ working on *this* repository.
 
 - **Root path:** `/Users/dipesh/code/spec-driven-delivery-team`
 - **Default branch:** `main`
-- **Package manager / runtime:** n/a — no build and no dependencies; the repo is
-  Markdown plus one workflow script the Claude Code runtime executes.
+- **Package manager / runtime:** `python3` 3.11+ for the orchestrator (standard
+  library only); `uv` for the development tooling (`ruff`, `mypy`, `pytest`)
+  declared in `pyproject.toml`. The rest of the repo is Markdown.
 - **Layout:**
-  - `.claude-plugin/` — plugin manifest.
-  - `.delivery-team/` — this profile (tracked) beside the run's git-ignored
-    runtime state.
-  - `agents/` — the team's agent definitions.
-  - `skills/` — the plugin's skills, one directory per skill.
+  - `.claude-plugin/` — plugin manifest (the Claude Code packaging).
+  - `.delivery-team/` — this profile and `config.toml` (tracked) beside the
+    run's git-ignored runtime state.
+  - `bin/sdt` — the orchestrator.
+  - `adapters/` — one TOML per engine.
+  - `roles/` — the team's role prompts.
+  - `skills/` — the skills, one directory per skill.
+  - `tests/` — the orchestrator's tests and the stub engine.
   - `extras/claude/` — Claude-only surfaces: the statusline skill and script,
     and `workflows/consistency-sweep.js`, the parallel spec audit.
   - `docs/` — the spec: `architecture.md` (entry doc), `team-charter.md`,
@@ -25,12 +29,13 @@ working on *this* repository.
 
 ## Quality gate
 
-- **Scoped:** n/a — there is no test suite; the diff is prose. The reviewer's
-  reading against `docs/architecture.md` and `docs/team-charter.md` IS the
-  verification.
-- **Full:** n/a — the `consistency-check` skill (spec-vs-spec, then
-  spec-vs-code over the agent, skill and workflow definitions) is this repo's
-  full audit; `/delivery-team:consistency-sweep` runs it across everything.
+- **Scoped / Full:** the commands in `config.toml` `[gate]` (ruff, mypy and
+  pytest over `bin/sdt` and `tests/`). They verify the orchestrator only.
+- **Not covered:** the role prompts, skills and docs are prose, so the gate
+  cannot exercise them; the reviewer's reading against `docs/architecture.md`
+  and `docs/team-charter.md` IS their verification, and the
+  `consistency-check` role (spec-vs-spec, then spec-vs-code over the role,
+  skill and adapter files) is this repo's audit of them.
 - **Not covered:** everything not readable — there is no automated gate, so
   nothing is compiled, run, or booted; reading against the spec is the entire
   verification.
@@ -48,8 +53,9 @@ working on *this* repository.
 ## Specification source of truth
 
 - **Docs are spec?** Yes. `docs/architecture.md` and `docs/team-charter.md`
-  specify the framework; the agent files under `agents/`, the skills under
-  `skills/` and the Claude-only extras under `extras/claude/` implement them. A mismatch means
+  specify the framework; the orchestrator under `bin/`, the role files under
+  `roles/`, the adapters, the skills and the Claude-only extras under
+  `extras/claude/` implement them. A mismatch means
   the implementing file is wrong —
   unless the change is a deliberate re-decision, which is an owner call and
   updates the spec first. `docs/project-profile.template.md` is a shipped

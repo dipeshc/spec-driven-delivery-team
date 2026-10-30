@@ -1,0 +1,1987 @@
+#!/usr/bin/env python3
+"""sdt — the spec-driven delivery team orchestrator.
+
+Runs every team role as a headless, worktree-confined process on whatever coding
+CLI the project configures (an *engine*, described by an adapter), and keeps the
+pipeline state in git plus the progress ledger. It is the only component that
+talks to an engine, and it never pushes.
+
+Standard library only; Python 3.11+.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from functools import partial
+from pathlib import Path
+from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    sys.exit("sdt needs Python 3.11 or newer (tomllib)")
+
+FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
+ROLES_DIR = FRAMEWORK_ROOT / "roles"
+ADAPTERS_DIR = FRAMEWORK_ROOT / "adapters"
+PROJECT_DIR_NAME = ".delivery-team"
+CHARTER_PATH = FRAMEWORK_ROOT / "docs" / "team-charter.md"
+
+STAGES = ("queued", "implementing", "review", "landing", "done", "blocked")
+TIERS = ("frontier", "mid", "small")
+ROLE_TIERS = {
+    "manager": "frontier",
+    "developer": "mid",
+    "reviewer": "frontier",
+    "merge-clerk": "frontier",
+    "qa": "frontier",
+    "researcher": "frontier",
+    "consistency-check": "frontier",
+    "exploration": "frontier",
+    "ui-inspector": "frontier",
+}
+EVENT_CAP = 20
+BLOCKED_MARK = "⛔"
+
+
+class SdtError(Exception):
+    """A failure the user must act on; printed without a traceback."""
+
+
+def now() -> int:
+    return int(time.time())
+
+
+def sh(cmd: str, cwd: Path, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, shell=True, cwd=cwd, text=True, capture_output=True, timeout=timeout, check=False)
+
+
+def git(*args: str, cwd: Path, check: bool = True) -> str:
+    proc = subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=False)
+    if check and proc.returncode != 0:
+        raise SdtError(f"git {' '.join(args)} failed in {cwd}: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def git_ok(*args: str, cwd: Path) -> bool:
+    proc = subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=False)
+    return proc.returncode == 0
+
+
+def atomic_write(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def slugify(name: str) -> str:
+    return name[:-3] if name.endswith(".md") else name
+
+
+def log(msg: str) -> None:
+    stamp = time.strftime("%H:%M:%S")
+    print(f"[{stamp}] {msg}", flush=True)
+
+
+# ---------------------------------------------------------------- config
+
+
+@dataclass
+class Guard:
+    cmd: str
+    when: str
+
+
+@dataclass
+class Config:
+    default_branch: str = "main"
+    install: str = ""
+    lockfile: str = ""
+    backlog_dir: str = "docs/backlog"
+    gate_scoped: list[str] = field(default_factory=list)
+    gate_full: list[str] = field(default_factory=list)
+    guards: list[Guard] = field(default_factory=list)
+    engine_default: str = "claude"
+    engine_roles: dict[str, str] = field(default_factory=dict)
+    engine_tiers: dict[str, str] = field(default_factory=dict)
+    max_parallel_developers: int = 2
+    reviewers: int = 1
+    review_rounds: int = 3
+    timeouts: dict[str, int] = field(default_factory=dict)
+    poll_seconds: int = 5
+    stall_seconds: int = 900
+    adopt_attempts: int = 2
+    known_failures: str = ""
+    consistency_every: int = 5
+    ports_exclusive: bool = False
+    worktrees_dir: str = ".delivery-team/worktrees"
+    branch_prefix: str = "item/"
+    board_enabled: bool = True
+    board_dir: str = ".delivery-team/progress"
+
+    DEFAULT_TIMEOUTS = {
+        "manager": 900,
+        "developer": 3600,
+        "reviewer": 1800,
+        "merge-clerk": 900,
+        "qa": 1800,
+        "researcher": 1800,
+        "consistency-check": 1800,
+        "exploration": 7200,
+        "ui-inspector": 3600,
+        "qa_gate": 3600,
+    }
+
+    def timeout_for(self, role: str) -> int:
+        return int(self.timeouts.get(role, self.DEFAULT_TIMEOUTS.get(role, 1800)))
+
+    def engine_for(self, role: str) -> str:
+        return self.engine_roles.get(role, self.engine_default)
+
+
+def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        raise SdtError(f"config.toml: [{key}] must be a table")
+    return value
+
+
+def _str_list(table: dict[str, Any], key: str, where: str) -> list[str]:
+    value = table.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise SdtError(f"config.toml: {where}.{key} must be a list of strings")
+    return [v for v in value if v.strip()]
+
+
+def load_config(path: Path) -> Config:
+    """Parse config.toml; every key is optional and validated when present."""
+    try:
+        data = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        raise SdtError(f"no config at {path}; run `sdt init` first") from None
+    except tomllib.TOMLDecodeError as exc:
+        raise SdtError(f"config.toml is not valid TOML: {exc}") from None
+    cfg = Config()
+    repo = _section(data, "repo")
+    cfg.default_branch = str(repo.get("default_branch", cfg.default_branch))
+    cfg.install = str(repo.get("install", ""))
+    cfg.lockfile = str(repo.get("lockfile", ""))
+    cfg.backlog_dir = str(_section(data, "backlog").get("dir", cfg.backlog_dir))
+    gate = _section(data, "gate")
+    cfg.gate_scoped = _str_list(gate, "scoped", "gate")
+    cfg.gate_full = _str_list(gate, "full", "gate")
+    for guard in gate.get("guards", []):
+        if not isinstance(guard, dict) or "cmd" not in guard:
+            raise SdtError("config.toml: each gate.guards entry needs a cmd")
+        cfg.guards.append(Guard(str(guard["cmd"]), str(guard.get("when", ""))))
+    engine = _section(data, "engine")
+    cfg.engine_default = str(engine.get("default", cfg.engine_default))
+    cfg.engine_roles = {k: str(v) for k, v in _section(engine, "roles").items()}
+    cfg.engine_tiers = {k: str(v) for k, v in _section(engine, "tiers").items()}
+    for tier in cfg.engine_tiers:
+        if tier not in TIERS:
+            raise SdtError(f"config.toml: unknown tier {tier!r} in [engine.tiers]")
+    limits = _section(data, "limits")
+    cfg.max_parallel_developers = int(limits.get("max_parallel_developers", 2))
+    cfg.reviewers = max(1, int(limits.get("reviewers", 1)))
+    cfg.review_rounds = int(limits.get("review_rounds", 3))
+    cfg.timeouts = {k: int(v) for k, v in _section(limits, "timeouts").items()}
+    liveness = _section(limits, "liveness")
+    cfg.poll_seconds = int(liveness.get("poll_seconds", 5))
+    cfg.stall_seconds = int(liveness.get("stall_seconds", 900))
+    cfg.adopt_attempts = int(liveness.get("adopt_attempts", 2))
+    qa = _section(data, "qa")
+    cfg.known_failures = str(qa.get("known_failures", ""))
+    cfg.consistency_every = int(qa.get("consistency_every", 5))
+    cfg.ports_exclusive = bool(_section(data, "ports").get("exclusive", False))
+    wt = _section(data, "worktrees")
+    cfg.worktrees_dir = str(wt.get("dir", cfg.worktrees_dir))
+    cfg.branch_prefix = str(wt.get("branch_prefix", cfg.branch_prefix))
+    board = _section(data, "board")
+    cfg.board_enabled = bool(board.get("enabled", True))
+    cfg.board_dir = str(board.get("dir", cfg.board_dir))
+    return cfg
+
+
+# ---------------------------------------------------------------- adapters
+
+
+@dataclass
+class Adapter:
+    name: str
+    command: list[str]
+    model_args: list[str]
+    add_dir_flag: str
+    add_dir_style: str
+    prompt: str
+    stdin_args: list[str]
+    output: str
+    success_key: str
+    success_value: str
+    timeout_exit_codes: list[int]
+    tiers: dict[str, str]
+    tested: bool
+    network: bool
+    vision: bool
+    path: Path
+
+    @property
+    def executable(self) -> str:
+        return self.command[0]
+
+    def model_for(self, tier: str, overrides: dict[str, str]) -> str:
+        if tier in overrides:
+            return overrides[tier]
+        return self.tiers.get(tier, "")
+
+    def render(
+        self,
+        *,
+        model: str,
+        cwd: Path,
+        add_dirs: list[Path],
+        out: Path,
+        prompt_file: Path,
+    ) -> list[str]:
+        """The argv for one run; `{tokens}` are substituted, never shell-expanded."""
+        tokens = {
+            "model": model,
+            "cwd": str(cwd),
+            "out": str(out),
+            "prompt_file": str(prompt_file),
+            "framework": str(FRAMEWORK_ROOT),
+        }
+
+        def sub(arg: str) -> str:
+            for key, value in tokens.items():
+                arg = arg.replace("{" + key + "}", value)
+            return arg
+
+        argv = [sub(a) for a in self.command]
+        if model:
+            argv += [sub(a) for a in self.model_args]
+        dirs = [str(d) for d in add_dirs]
+        if dirs and self.add_dir_flag:
+            if self.add_dir_style == "once":
+                argv += [self.add_dir_flag, *dirs]
+            elif self.add_dir_style == "comma":
+                argv += [self.add_dir_flag, ",".join(dirs)]
+            else:
+                for d in dirs:
+                    argv += [self.add_dir_flag, d]
+        if self.prompt == "arg":
+            argv.append(prompt_file.read_text())
+        else:
+            argv += [sub(a) for a in self.stdin_args]
+        return argv
+
+
+def adapter_dirs(project: Path | None, extra: list[Path]) -> list[Path]:
+    dirs = list(extra)
+    if project is not None:
+        dirs.append(project / PROJECT_DIR_NAME / "adapters")
+    dirs.append(ADAPTERS_DIR)
+    return dirs
+
+
+def load_adapter(name: str, dirs: list[Path]) -> Adapter:
+    for d in dirs:
+        path = d / f"{name}.toml"
+        if path.is_file():
+            break
+    else:
+        raise SdtError(f"no adapter named {name!r} under {', '.join(str(d) for d in dirs)}")
+    try:
+        data = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise SdtError(f"{path} is not valid TOML: {exc}") from None
+    command = data.get("command")
+    if not isinstance(command, list) or not command:
+        raise SdtError(f"{path}: command must be a non-empty list")
+    add_dir = data.get("add_dir", {})
+    style = str(add_dir.get("style", "repeat"))
+    if style not in ("once", "repeat", "comma"):
+        raise SdtError(f"{path}: add_dir.style must be once, repeat or comma")
+    output = str(data.get("output", "text"))
+    if not (output in ("text", "file") or output.startswith("json:")):
+        raise SdtError(f"{path}: output must be text, file or json:<key>")
+    success = data.get("success", {})
+    tiers = {k: str(v) for k, v in data.get("tiers", {}).items()}
+    return Adapter(
+        name=str(data.get("name", name)),
+        command=[str(a) for a in command],
+        model_args=[str(a) for a in data.get("model_args", [])],
+        add_dir_flag=str(add_dir.get("flag", "")),
+        add_dir_style=style,
+        prompt=str(data.get("prompt", "stdin")),
+        stdin_args=[str(a) for a in data.get("stdin_args", [])],
+        output=output,
+        success_key=str(success.get("key", "")),
+        success_value=str(success.get("value", "")),
+        timeout_exit_codes=[int(c) for c in data.get("timeout_exit_codes", [])],
+        tiers=tiers,
+        tested=bool(data.get("tested", False)),
+        network=bool(data.get("network", True)),
+        vision=bool(data.get("vision", False)),
+        path=path,
+    )
+
+
+# ---------------------------------------------------------------- roles
+
+
+@dataclass
+class Role:
+    name: str
+    tier: str
+    access: str
+    vision: bool
+    engines: list[str]
+    body: str
+
+
+def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """A flat `key: value` frontmatter; folded `>` values are joined with spaces."""
+    if not text.startswith("---\n"):
+        return {}, text
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}, text
+    meta: dict[str, str] = {}
+    key = ""
+    for line in text[4:end].splitlines():
+        if line[:1] in (" ", "\t") and key:
+            meta[key] = (meta[key] + " " + line.strip()).strip()
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        meta[key] = value.strip().lstrip(">").strip()
+    return meta, text[end + 5 :]
+
+
+def load_role(name: str) -> Role:
+    path = ROLES_DIR / f"{name}.md"
+    if not path.is_file():
+        raise SdtError(f"no role named {name!r} at {path}")
+    meta, body = parse_frontmatter(path.read_text())
+    tier = meta.get("tier") or ROLE_TIERS.get(name, "frontier")
+    if tier not in TIERS:
+        raise SdtError(f"{path}: tier must be one of {', '.join(TIERS)}")
+    engines_raw = meta.get("engines", "").strip("[]")
+    engines = [e.strip() for e in engines_raw.split(",") if e.strip()]
+    return Role(
+        name=name,
+        tier=tier,
+        access=meta.get("access", "write"),
+        vision=meta.get("vision", "false").lower() == "true",
+        engines=engines,
+        body=body.strip() + "\n",
+    )
+
+
+# ---------------------------------------------------------------- prompts and results
+
+FENCE_RE = re.compile(r"```json[ \t]*\n(.*?)\n[ \t]*```", re.DOTALL)
+
+
+def parse_result(text: str) -> dict[str, Any]:
+    """The last fenced ```json block of a final message; fails closed."""
+    blocks = FENCE_RE.findall(text)
+    if not blocks:
+        raise SdtError("no fenced json block in the final message")
+    try:
+        data = json.loads(blocks[-1])
+    except json.JSONDecodeError as exc:
+        raise SdtError(f"result block is not valid JSON: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("message"), str):
+        raise SdtError("result block must be an object with a string `message` key")
+    return data
+
+
+def extract_final_text(adapter: Adapter, stdout: str, out_file: Path) -> str:
+    """The engine's final message, per the adapter's output mode."""
+    if adapter.output == "file":
+        if not out_file.is_file():
+            raise SdtError("engine wrote no output file")
+        return out_file.read_text()
+    if adapter.output == "text":
+        return stdout
+    key = adapter.output.split(":", 1)[1]
+    obj = _last_json_object(stdout)
+    if obj is None:
+        raise SdtError("engine stdout holds no JSON object")
+    if adapter.success_key and str(obj.get(adapter.success_key)) != adapter.success_value:
+        raise SdtError(f"engine reported {adapter.success_key}={obj.get(adapter.success_key)!r}")
+    value = obj.get(key)
+    if not isinstance(value, str):
+        raise SdtError(f"engine JSON has no string {key!r}")
+    return value
+
+
+def _last_json_object(stdout: str) -> dict[str, Any] | None:
+    text = stdout.strip()
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+        if isinstance(obj, list):
+            dicts = [o for o in obj if isinstance(o, dict)]
+            return dicts[-1] if dicts else None
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
+
+
+def build_prompt(role: Role, context: dict[str, Any], payload: dict[str, Any], notes: str) -> str:
+    lines = [role.body, "", "---", "", "# Run context (written by the orchestrator)", ""]
+    for key, value in context.items():
+        if isinstance(value, list):
+            rendered = ", ".join(str(v) for v in value) if value else "none"
+        else:
+            rendered = str(value) if value not in ("", None) else "none"
+        lines.append(f"- {key}: {rendered}")
+    lines += ["", "## Notes from earlier runs of this role", ""]
+    lines.append(notes.strip() or "(none)")
+    lines += ["", "## Dispatch", "", "```json", json.dumps(payload, indent=2), "```", ""]
+    lines += [
+        "## Result contract",
+        "",
+        "End your final message with exactly one fenced ```json block holding an object",
+        'whose "message" key names the payload you are returning (the charter\'s message',
+        "table). Nothing after that block. A run with no such block, or whose block cannot",
+        "be parsed, is a failed run and is re-dispatched, so never end without one.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- role runs
+
+
+@dataclass
+class RunResult:
+    ok: bool
+    payload: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+    timed_out: bool = False
+    log_path: Path | None = None
+    seconds: int = 0
+
+
+class RoleRun:
+    """One headless engine process playing one role."""
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        role: Role,
+        adapter: Adapter,
+        model: str,
+        cwd: Path,
+        add_dirs: list[Path],
+        prompt: str,
+        runs_dir: Path,
+        timeout: int,
+        stall: int,
+        payload: dict[str, Any],
+        tag: str = "",
+    ) -> None:
+        self.id = run_id
+        self.role = role
+        self.adapter = adapter
+        self.model = model
+        self.cwd = cwd
+        self.timeout = timeout
+        self.stall = stall
+        self.payload = payload
+        self.tag = tag
+        self.started = now()
+        self.prompt_path = runs_dir / f"{run_id}.prompt.md"
+        self.log_path = runs_dir / f"{run_id}.log"
+        self.out_path = runs_dir / f"{run_id}.out"
+        self.prompt_path.write_text(prompt)
+        self.argv = adapter.render(
+            model=model, cwd=cwd, add_dirs=add_dirs, out=self.out_path, prompt_file=self.prompt_path
+        )
+        self._log = open(self.log_path, "w")
+        self._last_size = 0
+        self._last_growth = self.started
+        self.killed_for = ""
+        # The prompt is fed from the file rather than a pipe so a large prompt
+        # can never deadlock against an engine that reads stdin late.
+        stdin = open(self.prompt_path) if adapter.prompt == "stdin" else subprocess.DEVNULL
+        try:
+            self.proc = subprocess.Popen(
+                self.argv,
+                cwd=cwd,
+                stdin=stdin,
+                stdout=self._log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+        finally:
+            if hasattr(stdin, "close"):
+                stdin.close()
+
+    def poll(self) -> bool:
+        """True once the process has ended; kills it on timeout or stall."""
+        if self.proc.poll() is not None:
+            return True
+        size = self.log_path.stat().st_size
+        t = now()
+        if size != self._last_size:
+            self._last_size, self._last_growth = size, t
+        if t - self.started > self.timeout:
+            self.kill("timeout")
+        elif t - self._last_growth > self.stall:
+            self.kill("stalled")
+        return self.proc.poll() is not None
+
+    def kill(self, reason: str) -> None:
+        self.killed_for = reason
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+                self.proc.wait(timeout=10)
+        except ProcessLookupError:
+            pass
+
+    def alive_for(self) -> int:
+        return now() - self.started
+
+    def result(self) -> RunResult:
+        self._log.close()
+        seconds = now() - self.started
+        code = self.proc.returncode or 0
+        stdout = self.log_path.read_text(errors="replace")
+        timed_out = bool(self.killed_for) or code in self.adapter.timeout_exit_codes
+        if timed_out:
+            return RunResult(
+                False,
+                error=self.killed_for or f"engine exit {code} (turn limit)",
+                timed_out=True,
+                log_path=self.log_path,
+                seconds=seconds,
+            )
+        try:
+            text = extract_final_text(self.adapter, stdout, self.out_path)
+            payload = parse_result(text)
+        except SdtError as exc:
+            detail = f"{exc}" + (f"; exit code {code}" if code else "")
+            return RunResult(False, error=detail, log_path=self.log_path, seconds=seconds)
+        return RunResult(True, payload=payload, log_path=self.log_path, seconds=seconds)
+
+
+# ---------------------------------------------------------------- project
+
+
+@dataclass
+class BacklogItem:
+    slug: str
+    path: Path
+    priority: str
+    text: str
+
+
+class Project:
+    """Paths and git operations on one consuming repository."""
+
+    def __init__(self, start: Path, adapter_extra: list[Path] | None = None) -> None:
+        top = git("rev-parse", "--show-toplevel", cwd=start, check=False)
+        if not top:
+            raise SdtError(f"{start} is not inside a git repository")
+        porcelain = git("worktree", "list", "--porcelain", cwd=Path(top))
+        first = porcelain.splitlines()[0]
+        self.root = Path(first.split(" ", 1)[1])
+        self.dir = self.root / PROJECT_DIR_NAME
+        self.config_path = self.dir / "config.toml"
+        self.profile_path = self.dir / "profile.md"
+        self.cfg = load_config(self.config_path)
+        self.runs_dir = self.dir / "runs"
+        self.notes_dir = self.dir / "notes"
+        self.worktrees = self.root / self.cfg.worktrees_dir
+        self.backlog = self.root / self.cfg.backlog_dir
+        self.board_dir = self.root / self.cfg.board_dir
+        self.adapter_dirs = adapter_dirs(self.root, adapter_extra or [])
+        self.git_common = Path(git("rev-parse", "--git-common-dir", cwd=self.root))
+        if not self.git_common.is_absolute():
+            self.git_common = (self.root / self.git_common).resolve()
+        self._adapters: dict[str, Adapter] = {}
+
+    # -- adapters and roles
+
+    def adapter(self, name: str) -> Adapter:
+        if name not in self._adapters:
+            self._adapters[name] = load_adapter(name, self.adapter_dirs)
+        return self._adapters[name]
+
+    def ensure_dirs(self) -> None:
+        for d in (self.dir, self.runs_dir, self.notes_dir, self.worktrees):
+            d.mkdir(parents=True, exist_ok=True)
+
+    def notes_for(self, role: str) -> str:
+        path = self.notes_dir / f"{role}.md"
+        return path.read_text() if path.is_file() else ""
+
+    def append_notes(self, role: str, text: str) -> None:
+        if not text.strip():
+            return
+        path = self.notes_dir / f"{role}.md"
+        with open(path, "a") as fh:
+            fh.write(text.rstrip() + "\n")
+
+    def run_context(self, role: Role, cwd: Path, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        ctx: dict[str, Any] = {
+            "role": role.name,
+            "working directory (your confinement; the only tree you write)": str(cwd),
+            "repository root (read-only to you)": str(self.root),
+            "default branch": self.cfg.default_branch,
+            "charter": str(CHARTER_PATH),
+            "profile": str(self.profile_path),
+            "backlog dir": str(self.backlog),
+            "worktrees dir": str(self.worktrees),
+            "branch prefix": self.cfg.branch_prefix,
+            "scoped gate": self.cfg.gate_scoped,
+            "full gate": self.cfg.gate_full,
+            "invariant guards": [f"{g.cmd} — when {g.when}" for g in self.cfg.guards],
+            "install command": self.cfg.install,
+            "notes file (append mechanics, never permissions)": str(self.notes_dir / f"{role.name}.md"),
+        }
+        if extra:
+            ctx.update(extra)
+        return ctx
+
+    def start_run(
+        self,
+        role_name: str,
+        payload: dict[str, Any],
+        *,
+        cwd: Path,
+        tier: str | None = None,
+        engine: str | None = None,
+        extra_dirs: list[Path] | None = None,
+        tag: str = "",
+        context_extra: dict[str, Any] | None = None,
+    ) -> RoleRun:
+        role = load_role(role_name)
+        adapter = self.adapter(engine or self.cfg.engine_for(role_name))
+        if role.engines and adapter.name not in role.engines:
+            raise SdtError(f"role {role_name} runs only on {', '.join(role.engines)}, not {adapter.name}")
+        if role.vision and not adapter.vision:
+            raise SdtError(f"role {role_name} needs a vision-capable engine; {adapter.name} is not")
+        chosen_tier = tier or role.tier
+        model = adapter.model_for(chosen_tier, self.cfg.engine_tiers)
+        prompt = build_prompt(role, self.run_context(role, cwd, context_extra), payload, self.notes_for(role_name))
+        run_id = f"{int(time.time() * 1000)}-{role_name}" + (f"-{tag}" if tag else "")
+        add_dirs = [self.git_common, *(extra_dirs or [])]
+        self.ensure_dirs()
+        log(f"start {role_name} on {adapter.name}/{model or 'default'} in {cwd.name} ({run_id})")
+        return RoleRun(
+            run_id=run_id,
+            role=role,
+            adapter=adapter,
+            model=model,
+            cwd=cwd,
+            add_dirs=add_dirs,
+            prompt=prompt,
+            runs_dir=self.runs_dir,
+            timeout=self.cfg.timeout_for(role_name),
+            stall=self.cfg.stall_seconds,
+            payload=payload,
+            tag=tag,
+        )
+
+    # -- git facts
+
+    @property
+    def branch(self) -> str:
+        return self.cfg.default_branch
+
+    def tip(self) -> str:
+        return git("rev-parse", self.branch, cwd=self.root)
+
+    def ahead_of_origin(self) -> int | None:
+        if not git_ok("rev-parse", "--verify", f"origin/{self.branch}", cwd=self.root):
+            return None
+        return int(git("rev-list", "--count", f"origin/{self.branch}..{self.branch}", cwd=self.root))
+
+    def item_branch(self, slug: str) -> str:
+        return f"{self.cfg.branch_prefix}{slug}"
+
+    def branch_exists(self, name: str) -> bool:
+        return git_ok("rev-parse", "--verify", "--quiet", f"refs/heads/{name}", cwd=self.root)
+
+    def commits_ahead(self, ref: str) -> int:
+        return int(git("rev-list", "--count", f"{self.branch}..{ref}", cwd=self.root))
+
+    def main_dirty(self) -> bool:
+        return bool(git("status", "--porcelain", cwd=self.root))
+
+    # -- worktrees
+
+    def worktree_path(self, name: str) -> Path:
+        return self.worktrees / name
+
+    def registered_worktrees(self) -> dict[Path, str]:
+        out: dict[Path, str] = {}
+        path: Path | None = None
+        for line in git("worktree", "list", "--porcelain", cwd=self.root).splitlines():
+            if line.startswith("worktree "):
+                path = Path(line.split(" ", 1)[1])
+            elif line.startswith("branch ") and path is not None:
+                out[path] = line.split(" ", 1)[1].removeprefix("refs/heads/")
+            elif line.startswith("detached") and path is not None:
+                out[path] = ""
+        return out
+
+    def ensure_dev_worktree(self, slug: str) -> Path:
+        """The item's worktree on its branch, created from the live base or adopted."""
+        path = self.worktree_path(f"dev-{slug}")
+        branch = self.item_branch(slug)
+        if path.is_dir() and (path / ".git").exists():
+            return path
+        self.worktrees.mkdir(parents=True, exist_ok=True)
+        if self.branch_exists(branch):
+            git("worktree", "add", str(path), branch, cwd=self.root)
+        else:
+            git("worktree", "add", str(path), "-b", branch, self.branch, cwd=self.root)
+        self.install_in(path, force=True)
+        return path
+
+    def ensure_detached_worktree(self, name: str) -> Path:
+        path = self.worktree_path(name)
+        if not (path.is_dir() and (path / ".git").exists()):
+            self.worktrees.mkdir(parents=True, exist_ok=True)
+            git("worktree", "add", "--detach", str(path), self.branch, cwd=self.root)
+            self.install_in(path, force=True)
+        return path
+
+    def reset_detached(self, path: Path, ref: str) -> None:
+        git("reset", "--hard", cwd=path)
+        git("clean", "-fd", cwd=path)
+        git("checkout", "--detach", ref, cwd=path)
+        self.install_in(path)
+
+    def install_in(self, path: Path, force: bool = False) -> None:
+        if not self.cfg.install:
+            return
+        marker = self.runs_dir / f"install-{path.name}.hash"
+        digest = ""
+        if self.cfg.lockfile:
+            lock = path / self.cfg.lockfile
+            if lock.is_file():
+                digest = hashlib.sha256(lock.read_bytes()).hexdigest()
+        if not force and marker.is_file() and marker.read_text() == digest and digest:
+            return
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
+        proc = sh(self.cfg.install, path, timeout=self.cfg.timeout_for("qa_gate"))
+        if proc.returncode != 0:
+            raise SdtError(f"install failed in {path}: {proc.stderr[-2000:]}")
+        marker.write_text(digest)
+
+    def remove_item_worktree(self, slug: str) -> tuple[bool, str]:
+        """Prove-then-delete: the cherry proof sanctions -D, never ancestry alone."""
+        path = self.worktree_path(f"dev-{slug}")
+        branch = self.item_branch(slug)
+        if path.exists():
+            if git("status", "--porcelain", cwd=path):
+                self.rescue(slug, path)
+            git("worktree", "remove", "--force", str(path), cwd=self.root)
+        if not self.branch_exists(branch):
+            return True, "no branch"
+        if git_ok("branch", "-d", branch, cwd=self.root):
+            return True, "deleted (ancestor)"
+        cherry = git("cherry", self.branch, branch, cwd=self.root)
+        if any(line.startswith("+") for line in cherry.splitlines()):
+            return False, f"{branch} has unlanded commits; left in place"
+        git("branch", "-D", branch, cwd=self.root)
+        return True, "deleted (cherry proof)"
+
+    def rescue(self, slug: str, path: Path) -> str:
+        """Preserve a worktree's uncommitted work on rescue/<slug> before any force.
+
+        `git stash create` builds the commit object without touching hooks or the
+        index, so no check is bypassed and nothing in the worktree changes.
+        """
+        name = f"rescue/{slug}-{now()}"
+        git("add", "-A", cwd=path)
+        sha = git("stash", "create", cwd=path)
+        if sha:
+            git("branch", name, sha, cwd=path)
+            log(f"rescued uncommitted work for {slug} on {name}")
+        return name
+
+    # -- backlog
+
+    def scan_backlog(self) -> list[BacklogItem]:
+        items: list[BacklogItem] = []
+        if not self.backlog.is_dir():
+            return items
+        for path in sorted(self.backlog.glob("*.md")):
+            if path.name.lower() == "readme.md":
+                continue
+            m = re.match(r"(P\d)", path.name)
+            items.append(BacklogItem(slugify(path.name), path, m.group(1) if m else "P?", path.read_text()))
+        return items
+
+    def backlog_sha(self) -> str:
+        return git(
+            "log", "--no-show-signature", "-1", "--format=%H", "--", str(self.backlog), cwd=self.root, check=False
+        )
+
+    def file_items(self, items: list[dict[str, Any]], why: str) -> list[str]:
+        """Write backlog item files and commit them explicit-path. Roles never do this."""
+        written: list[str] = []
+        for item in items:
+            name = str(item.get("filename", "")).strip()
+            body = str(item.get("body", "")).rstrip() + "\n"
+            if not name or not name.endswith(".md") or "/" in name.strip("/").replace("blocked/", ""):
+                log(f"skipping item with bad filename {name!r}")
+                continue
+            path = self.backlog / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+            git("add", "--", str(path), cwd=self.root)
+            written.append(name)
+        if written:
+            git(
+                "commit",
+                "-q",
+                "-m",
+                f"chore(backlog): file {len(written)} item(s) — {why}",
+                "--",
+                *[str(self.backlog / n) for n in written],
+                cwd=self.root,
+            )
+        return written
+
+    def block_item(self, item: BacklogItem, reason: str) -> None:
+        dest = self.backlog / "blocked" / item.path.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        git("mv", str(item.path), str(dest), cwd=self.root)
+        with open(dest, "a") as fh:
+            fh.write(f"\n{BLOCKED_MARK} **Blocked ({time.strftime('%Y-%m-%d')}).** {reason.strip()}\n")
+        git("add", "--", str(dest), cwd=self.root)
+        git(
+            "commit",
+            "-q",
+            "-m",
+            f"chore(backlog): block {item.slug} — {reason.strip()[:60]}",
+            "--",
+            str(item.path),
+            str(dest),
+            cwd=self.root,
+        )
+
+    # -- landing
+
+    def land(self, sha: str) -> tuple[bool, str]:
+        """Fast-forward the default branch in the main tree to `sha`; nothing else moves."""
+        old = self.tip()
+        if not git_ok("merge-base", "--is-ancestor", old, sha, cwd=self.root):
+            return False, f"{sha[:8]} is not a fast-forward of {old[:8]}"
+        before = git("status", "--porcelain", cwd=self.root)
+        proc = subprocess.run(
+            ["git", "merge", "--ff-only", sha], cwd=self.root, text=True, capture_output=True, check=False
+        )
+        if proc.returncode != 0:
+            return False, f"ff-only merge refused: {proc.stderr.strip()}"
+        after = git("status", "--porcelain", cwd=self.root)
+        if after != before:
+            # The owner's own edits are sacred: report the desync, never clean it.
+            log(f"landing {sha[:8]} changed the main tree's status; owner edits left untouched")
+        return True, old
+
+    # -- QA gate
+
+    def run_full_gate(self, path: Path, log_path: Path) -> tuple[bool, list[str]]:
+        """Every full-gate command in order; failures filtered by known-failures patterns."""
+        known = self.known_failure_patterns()
+        new_failures: list[str] = []
+        with open(log_path, "w") as fh:
+            for cmd in self.cfg.gate_full:
+                fh.write(f"$ {cmd}\n")
+                fh.flush()
+                try:
+                    proc = sh(cmd, path, timeout=self.cfg.timeout_for("qa_gate"))
+                except subprocess.TimeoutExpired:
+                    fh.write("[timed out]\n\n")
+                    new_failures.append(cmd)
+                    continue
+                output = proc.stdout + proc.stderr
+                fh.write(output + f"\n[exit {proc.returncode}]\n\n")
+                if proc.returncode != 0:
+                    if any(p in output for p in known):
+                        fh.write("(known failure)\n")
+                        continue
+                    new_failures.append(cmd)
+        return not new_failures, new_failures
+
+    def known_failure_patterns(self) -> list[str]:
+        if not self.cfg.known_failures:
+            return []
+        path = self.root / self.cfg.known_failures
+        if not path.is_file():
+            return []
+        return [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+
+
+# ---------------------------------------------------------------- orchestrator state
+
+
+@dataclass
+class Item:
+    slug: str
+    slugs: list[str]
+    priority: str
+    paths: list[str]
+    texts: dict[str, str]
+    stage: str = "queued"
+    tier: str = "mid"
+    ports: bool = False
+    governing_docs: list[str] = field(default_factory=list)
+    guards: list[str] = field(default_factory=list)
+    sharpen_first: bool = False
+    branch: str = ""
+    worktree: str = ""
+    head: str = ""
+    agent: str = ""
+    model: str = ""
+    stage_entered_at: int = field(default_factory=now)
+    rounds: int = 0
+    adoptions: int = 0
+    land_attempts: int = 0
+    note: str = ""
+    detail: str = ""
+    checks: list[dict[str, str]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
+    pending: dict[str, Any] = field(default_factory=dict)
+    run_id: str = ""
+    deciding: bool = False
+
+    def enter(self, stage: str, text: str = "") -> None:
+        self.stage = stage
+        self.stage_entered_at = now()
+        self.history.append({"at": self.stage_entered_at, "stage": stage, "text": text})
+
+
+class Orchestrator:
+    """The pipeline: dispatch, route, land, verify, and mirror state."""
+
+    def __init__(self, project: Project, *, engine: str | None, watch: bool, label: str, args_text: str) -> None:
+        self.p = project
+        self.cfg = project.cfg
+        if engine:
+            self.cfg.engine_default = engine
+        self.watch = watch
+        self.items: dict[str, Item] = {}
+        self.runs: list[RoleRun] = []
+        self.events: list[dict[str, Any]] = []
+        self.started = now()
+        self.label = label
+        self.args_text = args_text
+        self.merges = 0
+        self.qa_state = "idle"
+        self.qa_green_tip = ""
+        self.qa_pending_tip = ""
+        self.last_backlog_sha = ""
+        self.review_batch: list[str] = []
+        self.manager_busy = False
+        self.consistency_due = False
+        self.stopping = False
+        self.exit_message = ""
+        # Commits to the main tree (blocking or filing items) are deferred while
+        # a landing is being verified, so the verified sha stays a fast-forward.
+        self.housekeeping: list[tuple[str, Callable[[], None]]] = []
+        self.open_regressions: dict[str, str] = {}
+        self.regression_slugs: dict[str, str] = {}
+
+    # -- events and ledger
+
+    def event(self, kind: str, text: str) -> None:
+        log(f"{kind}: {text}")
+        self.events.insert(0, {"at": now(), "kind": kind, "text": text})
+        del self.events[EVENT_CAP:]
+
+    def write_ledger(self) -> None:
+        if not self.cfg.board_enabled:
+            return
+        agents = [{"role": "Orchestrator", "state": self.summary_line(), "lastSignalAt": now()}]
+        for run in self.runs:
+            agents.append(
+                {
+                    "role": f"{run.role.name}" + (f" {run.tag}" if run.tag else ""),
+                    "state": f"running on {run.adapter.name}/{run.model or 'default'} for {run.alive_for() // 60} min",
+                    "lastSignalAt": now(),
+                }
+            )
+        agents.append({"role": "QA", "state": self.qa_state, "lastSignalAt": now()})
+        items = []
+        for it in self.items.values():
+            row: dict[str, Any] = {
+                "slug": it.slug,
+                "priority": it.priority if len(it.slugs) == 1 else f"{it.priority} ×{len(it.slugs)}",
+                "stage": it.stage,
+                "agent": it.agent or "—",
+                "model": it.model or "—",
+                "branch": it.branch,
+                "head": it.head,
+                "stageEnteredAt": it.stage_entered_at,
+                "history": it.history[-12:],
+            }
+            if len(it.slugs) > 1:
+                row["grouped"] = it.slugs[1:]
+            if it.note:
+                row["note"] = it.note
+            if it.detail:
+                row["detail"] = it.detail
+            if it.checks:
+                row["checks"] = it.checks
+            items.append(row)
+        state = {
+            "generatedAt": now(),
+            "run": {"label": self.label, "args": self.args_text, "startedAt": self.started},
+            "items": items,
+            "agents": agents,
+            "repo": {"defaultBranch": self.p.branch, "tip": self.p.tip(), "aheadOfOrigin": self.p.ahead_of_origin()},
+            "events": self.events,
+        }
+        self.p.board_dir.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(state, indent=1)
+        atomic_write(self.p.board_dir / "state.json", text)
+        atomic_write(self.p.board_dir / "state.js", "window.TEAM_STATE = " + text + ";\n")
+
+    def summary_line(self) -> str:
+        counts = {s: 0 for s in STAGES}
+        for it in self.items.values():
+            counts[it.stage] += 1
+        parts = [f"{n} {s}" for s, n in counts.items() if n]
+        return ", ".join(parts) or "no items"
+
+    # -- preflight
+
+    def preflight(self) -> None:
+        problems = doctor_checks(self.p, self.cfg.engine_default)
+        fatal = [m for level, m in problems if level == "error"]
+        if fatal:
+            raise SdtError("MUTATIONS-BLOCKED {reason: " + "; ".join(fatal) + "}")
+        self.p.ensure_dirs()
+        probe = self.p.worktrees / ".probe"
+        try:
+            probe.write_text("")
+            probe.unlink()
+        except OSError as exc:
+            raise SdtError(f"MUTATIONS-BLOCKED {{reason: worktrees dir not writable: {exc}}}") from None
+        current = git("config", "--get", "rerere.enabled", cwd=self.p.root, check=False)
+        if current != "false":
+            git("config", "--local", "rerere.enabled", "false", cwd=self.p.root)
+            self.event("run", "set rerere.enabled=false at local scope (rebase safety)")
+        if self.cfg.board_enabled:
+            self.p.board_dir.mkdir(parents=True, exist_ok=True)
+            page = self.p.board_dir / "dashboard.html"
+            if not page.exists():
+                shutil.copy(FRAMEWORK_ROOT / "assets" / "dashboard.html", page)
+
+    # -- intake
+
+    def intake(self) -> None:
+        """Triage new backlog items through the manager role; adopt in-flight branches."""
+        backlog = self.p.scan_backlog()
+        known = {s for it in self.items.values() for s in it.slugs}
+        fresh = [b for b in backlog if b.slug not in known]
+        if not fresh or self.manager_busy:
+            return
+        in_flight = [
+            {"slug": it.slug, "stage": it.stage, "branch": it.branch, "ports": it.ports} for it in self.items.values()
+        ]
+        payload = {
+            "message": "TRIAGE-REQUEST",
+            "items": [
+                {"slug": b.slug, "priority": b.priority, "path": str(b.path.relative_to(self.p.root)), "text": b.text}
+                for b in fresh
+            ],
+            "in_flight": in_flight,
+            "guards": [{"cmd": g.cmd, "when": g.when} for g in self.cfg.guards],
+            "ports_exclusive": self.cfg.ports_exclusive,
+            "engine_network": self.p.adapter(self.cfg.engine_for("developer")).network,
+        }
+        self.manager_busy = True
+        self.start(self.p.start_run("manager", payload, cwd=self.p.ensure_detached_worktree("manager"), tag="triage"))
+
+    def apply_triage(self, payload: dict[str, Any], fresh: dict[str, BacklogItem]) -> None:
+        decisions = payload.get("items", [])
+        if not isinstance(decisions, list):
+            raise SdtError("TRIAGE payload has no items list")
+        seen: set[str] = set()
+        for d in decisions:
+            if not isinstance(d, dict):
+                continue
+            slug = str(d.get("slug", ""))
+            if slug not in fresh or slug in seen:
+                continue
+            group = [s for s in d.get("group", []) if isinstance(s, str) and s in fresh and s not in seen and s != slug]
+            slugs = [slug, *group]
+            seen.update(slugs)
+            action = str(d.get("action", "dispatch"))
+            item = Item(
+                slug=slug,
+                slugs=slugs,
+                priority=fresh[slug].priority,
+                paths=[str(fresh[s].path.relative_to(self.p.root)) for s in slugs],
+                texts={s: fresh[s].text for s in slugs},
+                tier=str(d.get("tier", "mid")) if str(d.get("tier", "mid")) in TIERS else "mid",
+                ports=bool(d.get("ports", False)),
+                governing_docs=[str(x) for x in d.get("governing_docs", [])],
+                guards=[str(x) for x in d.get("guards", [])],
+                sharpen_first=bool(d.get("sharpen_first", False)),
+                note=str(d.get("reason", "")),
+            )
+            item.branch = self.p.item_branch(slug)
+            if action == "block":
+                reason = str(d.get("reason", "blocked at triage"))
+                self.housekeep(f"block {slug}", partial(self.p.block_item, fresh[slug], reason))
+                item.enter("blocked", "blocked at triage")
+                self.items[slug] = item
+                self.event("blocked", f"{slug}: {item.note}")
+            elif action == "research" and (ROLES_DIR / "researcher.md").is_file():
+                item.enter("blocked", "needs research")
+                item.note = "needs research: " + str(d.get("reason", ""))
+                self.items[slug] = item
+                self.event("research", f"{slug}: {item.note}")
+                self.start(
+                    self.p.start_run(
+                        "researcher",
+                        {
+                            "message": "RESEARCH-REQUEST",
+                            "item": slug,
+                            "question": str(d.get("reason", "")),
+                            "item_text": fresh[slug].text,
+                        },
+                        cwd=self.p.ensure_detached_worktree("researcher"),
+                        tag=slug,
+                    )
+                )
+            elif action == "research":
+                reason = "needs research: " + str(d.get("reason", ""))
+                self.housekeep(f"block {slug}", partial(self.p.block_item, fresh[slug], reason))
+                item.enter("blocked", "needs research (no researcher role shipped)")
+                self.items[slug] = item
+            elif action == "hold":
+                item.enter("queued", "held: " + str(d.get("reason", "")))
+                self.items[slug] = item
+            else:
+                item.enter("queued", "triaged")
+                self.items[slug] = item
+                if slug in self.regression_slugs:
+                    item.note = f"regression:{self.regression_slugs[slug]}"
+                elif self.p.branch_exists(item.branch):
+                    item.note = "adopting existing branch"
+        for slug, b in fresh.items():
+            if slug not in seen:
+                item = Item(
+                    slug=slug,
+                    slugs=[slug],
+                    priority=b.priority,
+                    paths=[str(b.path.relative_to(self.p.root))],
+                    texts={slug: b.text},
+                )
+                item.branch = self.p.item_branch(slug)
+                item.enter("queued", "triaged by default")
+                self.items[slug] = item
+
+    # -- dispatch
+
+    def developers_running(self) -> int:
+        return sum(1 for r in self.runs if r.role.name == "developer")
+
+    def ports_held(self) -> bool:
+        return any(it.ports and it.stage in ("implementing", "review", "landing") for it in self.items.values())
+
+    def dispatch_ready(self) -> None:
+        queued = sorted(
+            (
+                it
+                for it in self.items.values()
+                if it.stage == "queued" and not it.deciding and not it.note.startswith("held")
+            ),
+            key=lambda i: (i.priority, i.rounds == 0, i.slug),
+        )
+        for it in queued:
+            if self.developers_running() >= self.cfg.max_parallel_developers:
+                return
+            if it.ports and self.cfg.ports_exclusive and self.ports_held():
+                continue
+            self.dispatch_developer(it)
+
+    def dispatch_developer(self, it: Item) -> None:
+        adopt = self.p.branch_exists(it.branch) or bool(it.pending)
+        wt = self.p.ensure_dev_worktree(it.slug)
+        payload: dict[str, Any] = {
+            "message": "IMPLEMENT",
+            "items": [{"slug": s, "path": it.paths[i], "text": it.texts[s]} for i, s in enumerate(it.slugs)],
+            "branch": it.branch,
+            "worktree": str(wt),
+            "base": self.p.branch,
+            "adopt": adopt,
+            "ports": it.ports,
+            "governing_docs": it.governing_docs,
+            "guards": it.guards,
+            "sharpen_first": it.sharpen_first,
+            "scoped_gate": self.cfg.gate_scoped,
+        }
+        if it.pending:
+            payload["resume"] = it.pending
+        it.pending = {}
+        it.worktree = str(wt)
+        run = self.p.start_run("developer", payload, cwd=wt, tier=it.tier, tag=it.slug)
+        it.agent, it.model = f"developer-{it.slug}", run.model or "default"
+        it.enter("implementing", ("adopting" if adopt else "dispatched") + f" on {run.adapter.name}")
+        it.run_id = run.id
+        self.event("dispatch", f"{it.slug}: {'adopting the existing branch' if adopt else 'dispatched'} ({it.tier})")
+        self.start(run)
+
+    def start(self, run: RoleRun) -> None:
+        self.runs.append(run)
+
+    def landing_in_flight(self) -> bool:
+        return any(r.role.name == "merge-clerk" for r in self.runs)
+
+    def housekeep(self, what: str, fn: Callable[[], None]) -> None:
+        """Run a main-tree housekeeping commit now, or after the in-flight landing."""
+        if self.landing_in_flight():
+            self.housekeeping.append((what, fn))
+            return
+        fn()
+
+    def flush_housekeeping(self) -> None:
+        if self.landing_in_flight():
+            return
+        pending, self.housekeeping = self.housekeeping, []
+        for what, fn in pending:
+            try:
+                fn()
+            except SdtError as exc:
+                self.event("error", f"housekeeping failed ({what}): {exc}")
+
+    # -- routing
+
+    def on_run_done(self, run: RoleRun, res: RunResult) -> None:
+        role = run.role.name
+        handler = {
+            "manager": self.on_manager,
+            "developer": self.on_developer,
+            "reviewer": self.on_reviewer,
+            "merge-clerk": self.on_merge_clerk,
+            "qa": self.on_qa,
+            "researcher": self.on_researcher,
+            "consistency-check": self.on_consistency,
+        }.get(role)
+        if handler is None:
+            self.event("done", f"{role} finished: {res.payload.get('message') if res.ok else res.error}")
+            return
+        if res.ok and isinstance(res.payload.get("notes_for_next_run"), str):
+            self.p.append_notes(role, str(res.payload["notes_for_next_run"]))
+        handler(run, res)
+
+    def item_for(self, run: RoleRun) -> Item | None:
+        return self.items.get(run.tag)
+
+    def on_manager(self, run: RoleRun, res: RunResult) -> None:
+        self.manager_busy = False
+        if run.tag == "triage":
+            fresh = {
+                str(i["slug"]): BacklogItem(
+                    str(i["slug"]), self.p.root / str(i["path"]), str(i["priority"]), str(i["text"])
+                )
+                for i in run.payload.get("items", [])
+                if (self.p.root / str(i["path"])).is_file()
+            }
+            if not res.ok:
+                self.event("error", f"triage failed: {res.error}; dispatching in priority order")
+                self.apply_triage({"items": []}, fresh)
+                return
+            self.apply_triage(res.payload, fresh)
+            self.event("triage", f"{len(fresh)} item(s) triaged")
+            return
+        it = self.item_for(run)
+        if it is None:
+            return
+        it.deciding = False
+        action = str(res.payload.get("action", "block")) if res.ok else "block"
+        reason = str(res.payload.get("reason", res.error if not res.ok else ""))
+        if action == "retry":
+            it.rounds = 0
+            it.pending = {"message": "RETRY", "reason": reason}
+            it.enter("queued", f"retry: {reason}")
+        elif action == "adopt":
+            it.pending = {"message": "ADOPT", "reason": reason}
+            it.enter("queued", f"adopt: {reason}")
+        else:
+            self.block(it, reason or "blocked by triage decision")
+
+    def ask_manager(self, it: Item, event: str, detail: dict[str, Any]) -> None:
+        payload = {
+            "message": "DECISION-REQUEST",
+            "event": event,
+            "item": it.slug,
+            "items": it.slugs,
+            "branch": it.branch,
+            "rounds": it.rounds,
+            "detail": detail,
+            "item_text": it.texts,
+        }
+        it.enter("queued", f"awaiting decision: {event}")
+        it.note = f"deciding: {event}"
+        it.deciding = True
+        self.start(self.p.start_run("manager", payload, cwd=self.p.ensure_detached_worktree("manager"), tag=it.slug))
+
+    def block(self, it: Item, reason: str) -> None:
+        def move() -> None:
+            for slug, rel in zip(it.slugs, it.paths, strict=True):
+                path = self.p.root / rel
+                if path.is_file():
+                    self.p.block_item(BacklogItem(slug, path, it.priority, path.read_text()), reason)
+
+        self.housekeep(f"block {it.slug}", move)
+        it.note = reason
+        it.enter("blocked", reason)
+        self.event("blocked", f"{it.slug}: {reason}")
+
+    def on_developer(self, run: RoleRun, res: RunResult) -> None:
+        it = self.item_for(run)
+        if it is None:
+            return
+        if not res.ok:
+            it.adoptions += 1
+            if res.timed_out and it.adoptions <= self.cfg.adopt_attempts:
+                it.pending = {"message": "ADOPT", "reason": res.error}
+                it.enter("queued", f"developer {res.error}; re-dispatching with adopt")
+                return
+            self.ask_manager(
+                it, "DEVELOPER-FAILED", {"error": res.error, "log": str(res.log_path), "adoptions": it.adoptions}
+            )
+            return
+        msg = res.payload.get("message")
+        if msg == "READY-FOR-REVIEW":
+            # The branch tip in git is the truth; the payload's head is a claim.
+            it.head = git("rev-parse", it.branch, cwd=self.p.root)
+            it.checks = [
+                {
+                    "name": str(v.get("cmd", "")),
+                    "status": "pass"
+                    if str(v.get("result", "")).lower().startswith(("pass", "ok", "green", "0"))
+                    else "fail",
+                }
+                for v in res.payload.get("verification", [])
+                if isinstance(v, dict)
+            ]
+            it.detail = str(res.payload.get("notes", ""))
+            it.pending = {"ready": res.payload}
+            it.enter("review", "READY-FOR-REVIEW")
+            self.review_batch.append(it.slug)
+        elif msg == "BLOCKED":
+            self.ask_manager(it, "BLOCKED", res.payload)
+        else:
+            self.ask_manager(it, "UNEXPECTED-PAYLOAD", res.payload)
+
+    def dispatch_reviews(self) -> None:
+        if not self.review_batch or any(r.role.name == "reviewer" for r in self.runs):
+            return
+        batch = [self.items[s] for s in self.review_batch if s in self.items and self.items[s].stage == "review"]
+        self.review_batch = []
+        if not batch:
+            return
+        wt = self.p.ensure_detached_worktree("reviewer-1")
+        self.p.reset_detached(wt, batch[0].branch)
+        requests = []
+        for it in batch:
+            ready = it.pending.get("ready", {})
+            requests.append(
+                {
+                    "items": it.slugs,
+                    "item_text": it.texts,
+                    "branch": it.branch,
+                    "worktree": it.worktree,
+                    "head": it.head,
+                    "verification": ready.get("verification", []),
+                    "ports": it.ports,
+                    "notes": ready.get("notes", ""),
+                }
+            )
+            it.agent, it.model = "reviewer-1", ""
+        payload = {
+            "message": "REVIEW-REQUEST",
+            "requests": requests,
+            "base": self.p.branch,
+            "reviewer_worktree": str(wt),
+            "scoped_gate": self.cfg.gate_scoped,
+        }
+        run = self.p.start_run(
+            "reviewer",
+            payload,
+            cwd=wt,
+            tag="+".join(it.slug for it in batch),
+            extra_dirs=[Path(it.worktree) for it in batch if it.worktree],
+        )
+        for it in batch:
+            it.model = run.model or "default"
+            it.run_id = run.id
+        self.start(run)
+
+    def on_reviewer(self, run: RoleRun, res: RunResult) -> None:
+        slugs = run.tag.split("+")
+        batch = [self.items[s] for s in slugs if s in self.items]
+        if not res.ok:
+            self.event("error", f"reviewer run failed ({res.error}); re-dispatching the batch")
+            self.review_batch.extend(it.slug for it in batch)
+            return
+        verdicts = res.payload.get("verdicts", [res.payload])
+        by_slug: dict[str, dict[str, Any]] = {}
+        for v in verdicts:
+            if not isinstance(v, dict):
+                continue
+            raw_names = v.get("items", v.get("item", []))
+            names: list[Any] = [raw_names] if isinstance(raw_names, str) else list(raw_names or [])
+            for n in names:
+                by_slug[str(n)] = v
+        for it in batch:
+            v = by_slug.get(it.slug) or next((x for x in verdicts if isinstance(x, dict) and len(batch) == 1), None)
+            if v is None:
+                self.event("error", f"no verdict for {it.slug}; re-queuing review")
+                self.review_batch.append(it.slug)
+                continue
+            msg = v.get("message")
+            if msg == "APPROVED":
+                it.pending = {"approved": v}
+                it.enter("landing", "APPROVED")
+                self.event("approved", it.slug)
+            elif msg in ("CHANGES-REQUESTED", "REBASE-REQUIRED"):
+                it.rounds += 1
+                if it.rounds > self.cfg.review_rounds:
+                    self.ask_manager(it, "REVIEW-ROUNDS-EXCEEDED", v)
+                    continue
+                it.pending = {
+                    "message": "FEEDBACK" if msg == "CHANGES-REQUESTED" else "REBASE",
+                    "comments": v.get("comments", []),
+                    "required": v.get("required", []),
+                    "onto": self.p.branch,
+                    "reason": v.get("reason", ""),
+                }
+                it.enter("queued", f"{msg} (round {it.rounds})")
+                self.event("changes", f"{it.slug}: {msg}")
+            else:
+                self.ask_manager(it, "UNEXPECTED-VERDICT", v)
+
+    def dispatch_landing(self) -> None:
+        if any(r.role.name == "merge-clerk" for r in self.runs):
+            return
+        it = next((i for i in self.items.values() if i.stage == "landing" and not i.pending.get("landing")), None)
+        if it is None:
+            return
+        wt = self.p.ensure_detached_worktree("merge-clerk")
+        self.p.reset_detached(wt, self.p.branch)
+        payload = {
+            "message": "MERGE-REQUEST",
+            "items": it.slugs,
+            "branch": it.branch,
+            "head": it.head,
+            "base": self.p.branch,
+            "scoped_gate": self.cfg.gate_scoped,
+            "guards": it.guards,
+            "item_paths": it.paths,
+        }
+        it.pending["landing"] = True
+        it.agent = "merge-clerk"
+        run = self.p.start_run("merge-clerk", payload, cwd=wt, tag=it.slug)
+        it.model, it.run_id = run.model or "default", run.id
+        self.start(run)
+
+    def on_merge_clerk(self, run: RoleRun, res: RunResult) -> None:
+        it = self.item_for(run)
+        if it is None:
+            return
+        it.pending.pop("landing", None)
+        if not res.ok:
+            it.land_attempts += 1
+            if it.land_attempts <= 3:
+                self.event("error", f"merge-clerk failed for {it.slug}: {res.error}; retrying")
+                return
+            self.ask_manager(it, "MERGE-CLERK-FAILED", {"error": res.error, "log": str(res.log_path)})
+            return
+        msg = res.payload.get("message")
+        if msg == "LANDABLE":
+            sha = str(res.payload.get("sha", ""))
+            ok, info = self.p.land(sha)
+            if not ok:
+                it.land_attempts += 1
+                if "not a fast-forward" in info and it.land_attempts <= 3:
+                    # The tip moved under the verification; verify again on the new tip.
+                    self.event("landing", f"{it.slug}: {info}; re-verifying on the new tip")
+                    return
+                self.event("merge-blocked", f"{it.slug}: {info}")
+                self.ask_manager(it, "MERGE-BLOCKED", {"reason": info})
+                return
+            it.head = sha
+            it.enter("done", f"MERGED {sha[:8]}")
+            it.agent = "merge-clerk"
+            self.merges += 1
+            self.event("merged", f"{it.slug} landed as {sha[:8]}")
+            removed, how = self.p.remove_item_worktree(it.slug)
+            if not removed:
+                self.event("warning", f"{it.slug}: {how}")
+            self.qa_pending_tip = sha
+            if self.cfg.consistency_every and self.merges % self.cfg.consistency_every == 0:
+                self.consistency_due = True
+            for other in self.items.values():
+                if other.stage == "review" and other.slug != it.slug:
+                    other.note = "base moved; reviewer will see the rebase need"
+        elif msg == "REBASE-REQUIRED":
+            it.rounds += 1
+            it.pending = {"message": "REBASE", "onto": self.p.branch, "reason": res.payload.get("reason", "")}
+            it.enter("queued", "REBASE-REQUIRED by merge-clerk")
+        else:
+            self.ask_manager(it, "MERGE-BLOCKED", res.payload)
+
+    # -- QA
+
+    def run_qa_gate(self) -> None:
+        if not self.qa_pending_tip or self.qa_state == "gating" or any(r.role.name == "qa" for r in self.runs):
+            return
+        if self.cfg.ports_exclusive and self.ports_held():
+            self.qa_state = "waiting for the exclusive-resource slot"
+            return
+        tip = self.qa_pending_tip
+        self.qa_pending_tip = ""
+        if not self.cfg.gate_full:
+            self.qa_green_tip = tip
+            self.qa_state = f"no full gate configured; {tip[:8]} unverified"
+            return
+        self.qa_state = "gating"
+        self.write_ledger()
+        wt = self.p.ensure_detached_worktree("qa")
+        self.p.reset_detached(wt, tip)
+        log_path = self.p.runs_dir / f"qa-gate-{tip[:8]}.log"
+        ok, failures = self.p.run_full_gate(wt, log_path)
+        if ok:
+            self.qa_green_tip = tip
+            self.qa_state = f"green at {tip[:8]}"
+            self.event("qa-green", f"full gate green at {tip[:8]}")
+            return
+        self.qa_state = f"red at {tip[:8]}: {len(failures)} new failure(s)"
+        self.event("qa-red", f"{tip[:8]}: {', '.join(failures)}")
+        # One open regression item per failure signature: a red tip while its fix
+        # is still in flight is the same regression, not a new one.
+        signature = "|".join(sorted(failures))
+        if self.regression_open(signature):
+            self.qa_state = f"red at {tip[:8]}; its regression item is already in flight"
+            return
+        self.open_regressions[signature] = ""
+        tail = log_path.read_text(errors="replace")[-6000:]
+        payload = {
+            "message": "REGRESSION-REQUEST",
+            "tip": tip,
+            "failed_commands": failures,
+            "log_path": str(log_path),
+            "log_tail": tail,
+            "last_green_tip": self.qa_green_tip,
+        }
+        self.start(self.p.start_run("qa", payload, cwd=wt, tag=tip[:8], extra_dirs=[self.p.runs_dir]))
+
+    def regression_open(self, signature: str) -> bool:
+        """True while a filed regression item for this failure signature has not landed or blocked."""
+        if signature not in self.open_regressions:
+            return False
+        slug = self.open_regressions[signature]
+        if not slug:
+            return True
+        item = self.items.get(slug)
+        return item is None or item.stage not in ("done", "blocked")
+
+    def on_qa(self, run: RoleRun, res: RunResult) -> None:
+        if not res.ok:
+            self.event("error", f"qa run failed: {res.error}")
+            self.qa_state = "red; qa role failed to file"
+            return
+        items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
+        tag = run.tag
+
+        failed = [str(c) for c in run.payload.get("failed_commands", [])]
+        signature = "|".join(sorted(failed))
+
+        def file_them() -> None:
+            filed = self.p.file_items(items, "regression at " + tag)
+            for name in filed:
+                self.regression_slugs[slugify(name)] = signature
+                self.open_regressions[signature] = slugify(name)
+            if not filed:
+                self.open_regressions.pop(signature, None)
+            self.qa_state = f"regression filed: {', '.join(filed) or 'nothing filed'}"
+            self.event("regression", self.qa_state)
+
+        self.qa_state = "regression found; filing"
+        self.housekeep("file regression", file_them)
+
+    def run_consistency(self) -> None:
+        if not self.consistency_due or any(r.role.name == "consistency-check" for r in self.runs):
+            return
+        self.consistency_due = False
+        if not (ROLES_DIR / "consistency-check.md").is_file():
+            self.event("warning", "no consistency-check role shipped; cadence skipped")
+            return
+        wt = self.p.ensure_detached_worktree("qa")
+        self.p.reset_detached(wt, self.p.branch)
+        self.start(
+            self.p.start_run(
+                "consistency-check", {"message": "RUN-CONSISTENCY", "tip": self.p.tip()}, cwd=wt, tag="cadence"
+            )
+        )
+
+    def on_consistency(self, run: RoleRun, res: RunResult) -> None:
+        if not res.ok:
+            self.event("error", f"consistency-check failed: {res.error}")
+            return
+        items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
+
+        def file_them() -> None:
+            filed = self.p.file_items(items, "consistency check")
+            self.event("consistency", f"filed {len(filed)} item(s)")
+
+        self.housekeep("file consistency findings", file_them)
+
+    def on_researcher(self, run: RoleRun, res: RunResult) -> None:
+        it = self.item_for(run)
+        if not res.ok:
+            self.event("error", f"researcher failed for {run.tag}: {res.error}")
+            return
+        items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
+        message = str(res.payload.get("message"))
+        tag = run.tag
+
+        def apply() -> None:
+            filed = self.p.file_items(items, f"research for {tag}")
+            if it is not None and message == "FILED":
+                for slug, rel in zip(it.slugs, it.paths, strict=True):
+                    path = self.p.root / rel
+                    if path.is_file():
+                        git("rm", "-q", "--", str(path), cwd=self.p.root)
+                        git(
+                            "commit",
+                            "-q",
+                            "-m",
+                            f"chore(backlog): {slug} superseded by researched item(s)",
+                            "--",
+                            str(path),
+                            cwd=self.p.root,
+                        )
+                it.note = f"researched; filed {', '.join(filed)}"
+            self.event("research", f"{tag}: {message} {', '.join(filed)}")
+
+        self.housekeep(f"research {tag}", apply)
+
+    # -- main loop
+
+    def tick(self) -> None:
+        for run in list(self.runs):
+            if run.poll():
+                self.runs.remove(run)
+                res = run.result()
+                log(
+                    f"done {run.role.name} ({run.id}) after {res.seconds}s: {res.payload.get('message') if res.ok else res.error}"
+                )
+                self.on_run_done(run, res)
+        backlog_sha = self.p.backlog_sha()
+        if backlog_sha != self.last_backlog_sha or not self.items:
+            self.last_backlog_sha = backlog_sha
+            self.intake()
+        self.flush_housekeeping()
+        self.dispatch_ready()
+        self.dispatch_reviews()
+        self.dispatch_landing()
+        self.run_qa_gate()
+        self.run_consistency()
+        self.write_ledger()
+
+    def drained(self) -> bool:
+        if (
+            self.runs
+            or self.manager_busy
+            or self.review_batch
+            or self.qa_pending_tip
+            or self.consistency_due
+            or self.housekeeping
+        ):
+            return False
+        open_items = [it for it in self.items.values() if it.stage not in ("done", "blocked")]
+        return not open_items
+
+    def run(self) -> int:
+        self.preflight()
+        self.event("run", f"started on {self.cfg.engine_default}; worktrees under {self.p.worktrees}")
+        try:
+            while True:
+                self.tick()
+                if self.drained():
+                    if self.watch:
+                        time.sleep(max(self.cfg.poll_seconds, 15))
+                        continue
+                    break
+                time.sleep(self.cfg.poll_seconds)
+        except KeyboardInterrupt:
+            for run in self.runs:
+                run.kill("interrupted")
+            self.event("run", "interrupted; running roles stopped, worktrees left on disk")
+            self.write_ledger()
+            return 130
+        done = sum(1 for it in self.items.values() if it.stage == "done")
+        blocked = [it.slug for it in self.items.values() if it.stage == "blocked"]
+        self.event("drained", f"{done} landed, {len(blocked)} blocked")
+        self.write_ledger()
+        print(
+            json.dumps(
+                {
+                    "message": "DRAINED",
+                    "landed": done,
+                    "blocked": blocked,
+                    "qa_green_tip": self.qa_green_tip,
+                    "board": str(self.p.board_dir / "dashboard.html"),
+                }
+            )
+        )
+        return 0
+
+
+# ---------------------------------------------------------------- doctor
+
+
+def doctor_checks(project: Project, engine: str) -> list[tuple[str, str]]:
+    """(level, message) findings; `error` blocks a run, `warn` is advisory."""
+    out: list[tuple[str, str]] = []
+    if not shutil.which("git"):
+        out.append(("error", "git is not on PATH"))
+    if not project.profile_path.is_file():
+        out.append(("warn", f"no profile at {project.profile_path}; roles will have no project prose"))
+    try:
+        adapter = project.adapter(engine)
+    except SdtError as exc:
+        out.append(("error", str(exc)))
+        return out
+    if shutil.which(adapter.executable) is None:
+        out.append(("error", f"engine {adapter.name}: {adapter.executable!r} is not on PATH"))
+    if not adapter.tested:
+        out.append(("warn", f"engine {adapter.name}: adapter is best-effort and untested"))
+    missing = [t for t in TIERS if not adapter.model_for(t, project.cfg.engine_tiers)]
+    if missing:
+        out.append(
+            ("warn", f"engine {adapter.name}: no model for tier(s) {', '.join(missing)}; the engine default applies")
+        )
+    if adapter.name == "claude":
+        settings = project.root / ".claude" / "settings.json"
+        if settings.is_file() and '"hooks"' in settings.read_text():
+            out.append(
+                ("warn", "project .claude/settings.json declares hooks; they run inside every headless role run")
+            )
+    if adapter.name == "codex" and not git_ok("rev-parse", "--git-dir", cwd=project.root):
+        out.append(("error", "codex exec needs a git repository"))
+    if not adapter.network:
+        out.append(("warn", f"engine {adapter.name}: no network in its sandbox; items needing ports are refused"))
+    for role_name in ("manager", "developer", "reviewer", "merge-clerk", "qa"):
+        if not (ROLES_DIR / f"{role_name}.md").is_file():
+            out.append(("error", f"role file missing: {ROLES_DIR / (role_name + '.md')}"))
+    if not project.cfg.gate_full:
+        out.append(("warn", "no full gate configured; QA cannot verify landings"))
+    return out
+
+
+# ---------------------------------------------------------------- commands
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    root = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()))
+    target = root / PROJECT_DIR_NAME
+    target.mkdir(exist_ok=True)
+    copied = []
+    for src, dst in (("docs/config.template.toml", "config.toml"), ("docs/profile.template.md", "profile.md")):
+        if not (target / dst).exists():
+            shutil.copy(FRAMEWORK_ROOT / src, target / dst)
+            copied.append(dst)
+    print(f"{target}: " + (", ".join(copied) + " created" if copied else "already initialised"))
+    print("Fill in config.toml (gate commands, engine) and profile.md, then run `sdt doctor`.")
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    project = Project(Path.cwd(), [Path(d) for d in args.adapter_dir])
+    engine = args.engine or project.cfg.engine_default
+    findings = doctor_checks(project, engine)
+    print(f"repo: {project.root}\nengine: {engine}\nroles: {ROLES_DIR}")
+    for level, msg in findings:
+        print(f"{level.upper():5} {msg}")
+    errors = [m for lvl, m in findings if lvl == "error"]
+    print("doctor: " + ("not ready" if errors else "ready"))
+    return 1 if errors else 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    project = Project(Path.cwd(), [Path(d) for d in args.adapter_dir])
+    orch = Orchestrator(
+        project,
+        engine=args.engine,
+        watch=args.watch,
+        label=args.label or project.root.name,
+        args_text=" ".join(sys.argv[1:]),
+    )
+    if args.dry_run:
+        for level, msg in doctor_checks(project, orch.cfg.engine_default):
+            print(f"{level.upper():5} {msg}")
+        for b in project.scan_backlog():
+            print(f"{b.priority} {b.slug}")
+        return 0
+    return orch.run()
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    project = Project(Path.cwd(), [])
+    state_path = project.board_dir / "state.json"
+    if not state_path.is_file():
+        print("no run state; nothing has run here yet")
+        return 0
+    state = json.loads(state_path.read_text())
+    age = now() - int(state.get("generatedAt", 0))
+    print(f"run: {state['run'].get('label')}  updated {age}s ago" + ("  (stale)" if age > 90 else ""))
+    print(f"tip: {str(state['repo'].get('tip', ''))[:8]}  ahead of origin: {state['repo'].get('aheadOfOrigin')}")
+    print(f"{'slug':40} {'stage':13} {'agent':22} {'model':10} {'in stage':>9}")
+    for it in state.get("items", []):
+        mins = (now() - int(it.get("stageEnteredAt", now()))) // 60
+        print(
+            f"{str(it.get('slug'))[:40]:40} {str(it.get('stage')):13} {str(it.get('agent'))[:22]:22} {str(it.get('model'))[:10]:10} {mins:>7}min"
+        )
+    for ag in state.get("agents", []):
+        print(f"- {ag.get('role')}: {ag.get('state')}")
+    for ev in state.get("events", [])[:8]:
+        print(f"  {time.strftime('%H:%M', time.localtime(int(ev.get('at', 0))))} {ev.get('kind')}: {ev.get('text')}")
+    print(f"board: {project.board_dir / 'dashboard.html'}")
+    return 0
+
+
+def cmd_board(args: argparse.Namespace) -> int:
+    project = Project(Path.cwd(), [])
+    if not project.cfg.board_enabled:
+        print("the board is disabled in config.toml ([board] enabled = false)")
+        return 1
+    project.board_dir.mkdir(parents=True, exist_ok=True)
+    page = project.board_dir / "dashboard.html"
+    if not page.exists() or args.refresh:
+        shutil.copy(FRAMEWORK_ROOT / "assets" / "dashboard.html", page)
+    url = page.as_uri()
+    for opener in (["open", url], ["xdg-open", url], ["cmd", "/c", "start", "", url]):
+        if shutil.which(opener[0]):
+            subprocess.Popen(opener, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            break
+    print(url)
+    return 0
+
+
+def cmd_role(args: argparse.Namespace) -> int:
+    project = Project(Path.cwd(), [Path(d) for d in args.adapter_dir])
+    if args.payload == "-":
+        raw = sys.stdin.read()
+    elif args.payload:
+        raw = Path(args.payload).read_text() if Path(args.payload).is_file() else args.payload
+    else:
+        raw = "{}"
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise SdtError(f"payload is not JSON: {exc}") from None
+    payload.setdefault("message", f"{args.name.upper()}-REQUEST")
+    if args.cwd:
+        cwd = Path(args.cwd).resolve()
+    else:
+        cwd = project.ensure_detached_worktree(f"scratch-{args.name}")
+        project.reset_detached(cwd, project.branch)
+    run = project.start_run(args.name, payload, cwd=cwd, tier=args.tier, engine=args.engine, tag="adhoc")
+    while not run.poll():
+        time.sleep(2)
+    res = run.result()
+    if not res.ok:
+        print(json.dumps({"message": "RUN-FAILED", "error": res.error, "log": str(res.log_path)}))
+        return 1
+    if args.file_items and isinstance(res.payload.get("items"), list):
+        filed = project.file_items([i for i in res.payload["items"] if isinstance(i, dict)], f"{args.name} run")
+        res.payload["filed"] = filed
+    print(json.dumps(res.payload, indent=2))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="sdt", description=__doc__.split("\n\n")[1] if __doc__ else "")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--engine", help="adapter name overriding config.toml")
+        p.add_argument("--adapter-dir", action="append", default=[], help="extra directory of adapter TOML files")
+
+    p = sub.add_parser("init", help="create .delivery-team/ from the templates")
+    p.set_defaults(fn=cmd_init)
+    p = sub.add_parser("doctor", help="check engine and repo preconditions")
+    common(p)
+    p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("run", help="work the backlog until drained")
+    common(p)
+    p.add_argument("--watch", action="store_true", help="keep polling the backlog after draining")
+    p.add_argument("--dry-run", action="store_true", help="show preconditions and the backlog, dispatch nothing")
+    p.add_argument("--label", help="run label for the board")
+    p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("status", help="print the run state from the ledger")
+    common(p)
+    p.set_defaults(fn=cmd_status)
+    p = sub.add_parser("board", help="open the progress board")
+    common(p)
+    p.add_argument("--refresh", action="store_true", help="recopy the page from the framework")
+    p.set_defaults(fn=cmd_board)
+    p = sub.add_parser("role", help="run one role ad hoc with a JSON payload")
+    common(p)
+    p.add_argument("name")
+    p.add_argument("--payload", help="JSON text, a file path, or - for stdin")
+    p.add_argument("--tier", choices=TIERS)
+    p.add_argument("--cwd", help="working directory; default is a scratch worktree at the default branch")
+    p.add_argument("--file-items", action="store_true", help="file any `items` the result carries as backlog items")
+    p.set_defaults(fn=cmd_role)
+
+    args = ap.parse_args(argv)
+    try:
+        return int(args.fn(args))
+    except SdtError as exc:
+        print(f"sdt: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,28 @@
+# Engine adapter: OpenAI Codex CLI (`codex exec`). Contract-tested; real runs
+# need the CLI installed.
+#
+# `workspace-write` makes the working directory writable. A git worktree's
+# `.git` file points into the main repository's git directory, which is why the
+# orchestrator always passes the git common dir as an add-dir. Codex needs a git
+# repository; `doctor` checks that.
+name = "codex"
+tested = false
+network = false
+vision = false
+
+command = ["codex", "exec", "--sandbox", "workspace-write", "--json", "-o", "{out}", "-C", "{cwd}"]
+model_args = ["-m", "{model}"]
+add_dir = { flag = "--add-dir", style = "repeat" }
+prompt = "stdin"
+# A lone `-` tells `codex exec` to read the prompt from stdin.
+stdin_args = ["-"]
+# `-o` writes the final message to a file; stdout carries JSONL events.
+output = "file"
+timeout_exit_codes = []
+
+# Codex model names change often; set [engine.tiers] in config.toml. With no
+# model named, the engine's configured default is used for every tier.
+[tiers]
+frontier = ""
+mid = ""
+small = ""
