@@ -1,7 +1,7 @@
 #!/bin/sh
 # Delivery-team statusline: a glanceable, two-line summary of a team run.
 #
-# Rendered entirely from the Manager's state ledger — pure POSIX shell, no Node,
+# Rendered entirely from the orchestrator's state ledger — pure POSIX shell, no Node,
 # no Python, no jq, and no network. It reads the caller's JSON on stdin (Claude
 # Code passes {"workspace":{"project_dir":"…"}}) and prints team lines only when
 # that project has live team state; otherwise it prints nothing (or defers to a

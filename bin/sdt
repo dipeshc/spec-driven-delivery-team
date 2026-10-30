@@ -1102,6 +1102,17 @@ class Orchestrator:
     # -- preflight
 
     def preflight(self) -> None:
+        self.p.ensure_dirs()
+        pid_file = self.p.runs_dir / "sdt.pid"
+        if pid_file.is_file():
+            try:
+                other = int(pid_file.read_text().strip() or "0")
+                if other and other != os.getpid():
+                    os.kill(other, 0)
+                    raise SdtError(f"MUTATIONS-BLOCKED {{reason: another run (pid {other}) holds this project}}")
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        pid_file.write_text(str(os.getpid()))
         problems = doctor_checks(self.p, self.cfg.engine_default)
         fatal = [m for level, m in problems if level == "error"]
         if fatal:
@@ -1781,11 +1792,13 @@ class Orchestrator:
                 run.kill("interrupted")
             self.event("run", "interrupted; running roles stopped, worktrees left on disk")
             self.write_ledger()
+            (self.p.runs_dir / "sdt.pid").unlink(missing_ok=True)
             return 130
         done = sum(1 for it in self.items.values() if it.stage == "done")
         blocked = [it.slug for it in self.items.values() if it.stage == "blocked"]
         self.event("drained", f"{done} landed, {len(blocked)} blocked")
         self.write_ledger()
+        (self.p.runs_dir / "sdt.pid").unlink(missing_ok=True)
         print(
             json.dumps(
                 {
@@ -1856,6 +1869,15 @@ def cmd_init(args: argparse.Namespace) -> int:
             copied.append(dst)
     print(f"{target}: " + (", ".join(copied) + " created" if copied else "already initialised"))
     print("Fill in config.toml (gate commands, engine) and profile.md, then run `sdt doctor`.")
+    return 0
+
+
+def cmd_paths(args: argparse.Namespace) -> int:
+    print(f"framework: {FRAMEWORK_ROOT}")
+    print(f"charter:   {CHARTER_PATH}")
+    print(f"roles:     {ROLES_DIR}")
+    print(f"adapters:  {ADAPTERS_DIR}")
+    print(f"board:     {FRAMEWORK_ROOT / 'assets' / 'dashboard.html'}")
     return 0
 
 
@@ -1973,6 +1995,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("init", help="create .delivery-team/ from the templates")
     p.set_defaults(fn=cmd_init)
+    p = sub.add_parser("paths", help="print where the framework, charter and roles live")
+    common(p)
+    p.set_defaults(fn=cmd_paths)
     p = sub.add_parser("doctor", help="check engine and repo preconditions")
     common(p)
     p.set_defaults(fn=cmd_doctor)

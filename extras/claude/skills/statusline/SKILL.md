@@ -3,7 +3,7 @@ name: statusline
 description: >
   Install (or update, or remove) the delivery-team statusline — the always-on,
   two-line terminal summary of a team run, rendered under every session in this
-  project from the Manager's state ledger. Copies the shell script to a stable
+  project from the orchestrator's state ledger. Copies the shell script to a stable
   user-level path and wires statusLine in ~/.claude/settings.json. If a
   statusline is already configured it never clobbers it: it offers to chain
   (run the existing command, then append the team lines) or to decline, and says
@@ -13,7 +13,7 @@ description: >
 ---
 
 Install the delivery-team **statusline**: the two-line summary Claude Code shows
-under every session, rendered from the Manager's `state.js`/`state.json` ledger.
+under every session, rendered from the orchestrator's `state.js`/`state.json` ledger.
 Line one is the aggregate — items done/total with a bar, counts by stage, the
 default-branch tip, an ahead-of-origin marker, and run elapsed. Line two is the
 one item most worth attention — the item in review and/or blocked, with its
@@ -99,7 +99,7 @@ script to a stable, version-independent path under the user's home and points
    and the new one. If you declined or only refreshed the script, say so. Never
    report a change you did not make.
 
-The line renders nothing until a Manager is running and has written state beside
+The line renders nothing until a run is active and the orchestrator has written state beside
 the project, so installing before a run is safe — the terminal simply shows your
 existing statusline (or nothing) until a run begins.
 

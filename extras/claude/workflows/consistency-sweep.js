@@ -1,7 +1,7 @@
 export const meta = {
   name: 'consistency-sweep',
   description: 'Full parallel spec audit: fan out the consistency-check classes, adversarially verify every finding, file the survivors as backlog items',
-  whenToUse: 'A whole-spec audit on demand. The consistency-check skill remains the incremental path QA runs on its cadence; this sweeps everything in parallel and refutes each finding before filing.',
+  whenToUse: 'A whole-spec audit on demand. The consistency-check role remains the incremental path the orchestrator runs on its cadence; this sweeps everything in parallel and refutes each finding before filing.',
   phases: [
     { title: 'Map', detail: 'applicability gate and file inventory' },
     { title: 'Audit', detail: 'one agent per finding class' },
@@ -22,7 +22,7 @@ const MAP = {
     hasGlossary: { type: 'boolean' },
     backlogPath: { type: 'string' },
     files: { type: 'array', items: { type: 'string' } },
-    skillPath: { type: 'string', description: 'absolute path to the consistency-check SKILL.md, resolved on disk' },
+    skillPath: { type: 'string', description: 'absolute path to roles/consistency-check.md, resolved on disk' },
   },
 }
 
@@ -79,7 +79,7 @@ const CLASSES = [
 
 phase('Map')
 const map = await agent(
-  `Locate the delivery-team plugin's consistency-check skill on disk — its file is \`skills/consistency-check/SKILL.md\` under the installed plugin root, which is typically under ~/.claude/plugins/. Return its absolute path as skillPath; if the repo you are in IS the plugin, use its own copy. Read it, and read <repo>/.delivery-team/profile.md, then apply that skill's "Before anything: applicability gate" exactly.
+  `Locate the delivery-team plugin's consistency-check role on disk — its file is \`roles/consistency-check.md\` under the installed plugin root, which is typically under ~/.claude/plugins/. Return its absolute path as skillPath; if the repo you are in IS the plugin, use its own copy. Read it, and read <repo>/.delivery-team/profile.md, then apply that skill's "Before anything: applicability gate" exactly.
 
 Return: whether the skill applies at all and why; whether docs are spec; the docs root; whether the project declares decision records and a glossary; the backlog path; and the full list of files that make up the specification and the definitions it governs (the docs root, plus agent and skill definitions, manifests and the profile template if the project ships them).
 

@@ -154,3 +154,18 @@ def test_status_without_run(repo: Path) -> None:
     proc = run_sdt(repo, "status")
     assert proc.returncode == 0
     assert "no run state" in proc.stdout
+
+
+def test_refuses_a_second_run(repo: Path) -> None:
+    runs = repo / ".delivery-team" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "sdt.pid").write_text(str(os.getpid()))
+    proc = run_sdt(repo, "run")
+    assert proc.returncode == 2
+    assert "MUTATIONS-BLOCKED" in proc.stderr and "another run" in proc.stderr
+
+
+def test_paths(repo: Path) -> None:
+    proc = run_sdt(repo, "paths")
+    assert proc.returncode == 0
+    assert "charter:" in proc.stdout and "team-charter.md" in proc.stdout
