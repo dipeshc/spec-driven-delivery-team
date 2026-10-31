@@ -68,7 +68,7 @@ const FILED = {
 }
 
 // One agent per finding class so the classes run concurrently. The classes are
-// named here; the skill defines each one, and phase 2 is gated on docsAreSpec.
+// named here; the role defines each one, and phase 2 is gated on docsAreSpec.
 const CLASSES = [
   { key: 'contradictions', title: 'Cross-document contradictions, and intra-document self-contradiction' },
   { key: 'references', title: 'Reference integrity' },
@@ -79,9 +79,9 @@ const CLASSES = [
 
 phase('Map')
 const map = await agent(
-  `Locate the delivery-team plugin's consistency-check role on disk — its file is \`roles/consistency-check.md\` under the installed plugin root, which is typically under ~/.claude/plugins/. Return its absolute path as skillPath; if the repo you are in IS the plugin, use its own copy. Read it, and read <repo>/.delivery-team/profile.md, then apply that skill's "Before anything: applicability gate" exactly.
+  `Locate the delivery-team plugin's consistency-check role on disk — its file is \`roles/consistency-check.md\` under the installed plugin root, which is typically under ~/.claude/plugins/. Return its absolute path as skillPath; if the repo you are in IS the plugin, use its own copy. Read it, and read <repo>/.delivery-team/profile.md, then apply that role's "Before anything: applicability gate" exactly.
 
-Return: whether the skill applies at all and why; whether docs are spec; the docs root; whether the project declares decision records and a glossary; the backlog path; and the full list of files that make up the specification and the definitions it governs (the docs root, plus agent and skill definitions, manifests and the profile template if the project ships them).
+Return: whether the role applies at all and why; whether docs are spec; the docs root; whether the project declares decision records and a glossary; the backlog path; and the full list of files that make up the specification and the definitions it governs (the docs root, plus agent and skill definitions, manifests and the profile template if the project ships them).
 
 Do not audit anything. This is inventory only.`,
   { schema: MAP, phase: 'Map' },
@@ -103,14 +103,14 @@ const verified = await pipeline(
   classes,
   cls =>
     agent(
-      `You are auditing one class of defect across a specification. **Read ${map.skillPath} first — it defines the method, every finding class, and how to pick the canonical side — and follow it.** This prompt names your class and your scope; the skill says what the class means and how to judge it.
+      `You are auditing one class of defect across a specification. **Read ${map.skillPath} first — it defines the method, every finding class, and how to pick the canonical side — and follow it.** This prompt names your class and your scope; the role file says what the class means and how to judge it.
 
-Your class, and only this class: **${cls.title}**, as that skill defines it. Audit nothing outside it.
+Your class, and only this class: **${cls.title}**, as that role defines it. Audit nothing outside it.
 
 Files in scope:
 ${map.files.join('\n')}
 
-Return each finding as: the claim in one sentence, quoted file:line evidence for every side, which side is canonical and why (resolve that per the skill's rule, do not invent your own), and whether it is mechanical rot. Report nothing you could not substantiate by reading the files themselves. An empty findings list is a good answer when the class is clean.`,
+Return each finding as: the claim in one sentence, quoted file:line evidence for every side, which side is canonical and why (resolve that per the role's rule, do not invent your own), and whether it is mechanical rot. Report nothing you could not substantiate by reading the files themselves. An empty findings list is a good answer when the class is clean.`,
       { label: `audit:${cls.key}`, phase: 'Audit', schema: FINDINGS },
     ),
   (result, cls) =>
@@ -145,7 +145,7 @@ const real = survivors.filter(f => !f.mechanical)
 const rot = survivors.filter(f => f.mechanical)
 
 const filed = await agent(
-  `File these verified specification defects as backlog items, following the Filing section of ${map.skillPath} exactly: one item per real defect at the profile's backlog location, priority encoded in the filename, frontmatter \`by: qa (consistency-sweep)\`, and a body giving the claim, both sides quoted, the canonical resolution, and what the fix must change. Batch ALL mechanical rot into ONE low-priority item listing every instance.
+  `File these verified specification defects as backlog items, following the "What you return" section of ${map.skillPath} exactly: one item per real defect at the profile's backlog location, priority encoded in the filename, frontmatter \`by: qa (consistency-sweep)\`, and a body giving the claim, both sides quoted, the canonical resolution, and what the fix must change. Batch ALL mechanical rot into ONE low-priority item listing every instance.
 
 Every item must satisfy the charter's item-shape contract — a stranger must be able to action it cold. **File findings; fix nothing**, not even a broken link.
 

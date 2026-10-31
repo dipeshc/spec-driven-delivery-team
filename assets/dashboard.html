@@ -9,7 +9,7 @@
 
   Self-contained: no server, no build, no network, no external assets, system
   fonts only. Opened over file:// beside a sibling state.js that the run's
-  Manager rewrites on every reconcile. This page is a renderer, never a source
+  orchestrator rewrites on every tick. This page is a renderer, never a source
   of truth: delete it and nothing about a run changes.
 
   It reloads state by RE-INJECTING <script src="state.js?t=<now>"> on a short
@@ -351,7 +351,7 @@
   <main id="main">
     <section class="norun" id="norun" aria-labelledby="norun-h">
       <h2 id="norun-h">No run is active</h2>
-      <p>When a delivery-team run starts, its Manager writes <span class="mono">state.js</span> beside this page and the board fills in on its own. Nothing to do here until then.</p>
+      <p>When a delivery-team run starts, its orchestrator writes <span class="mono">state.js</span> beside this page and the board fills in on its own. Nothing to do here until then.</p>
       <p class="mono" id="norun-status">Checking for state.js every 3 s</p>
     </section>
 
@@ -421,7 +421,7 @@
       </section>
 
       <footer>
-        This board renders <span class="mono">state.js</span>, written beside it by the run's Manager, and re-reads it every 3 seconds. It is a view, not a record: git and the Manager's ledger remain the sources.
+        This board renders <span class="mono">state.js</span>, written beside it by the run's orchestrator, and re-reads it every 3 seconds. It is a view, not a record: git and the orchestrator's ledger remain the sources.
       </footer>
     </div>
   </main>
@@ -632,7 +632,7 @@
     if(stale){
       var t = $("stale-text"); clear(t);
       if(gen){
-        t.appendChild(document.createTextNode("The Manager has not written state since " + fmtClock(gen) + " ("));
+        t.appendChild(document.createTextNode("The orchestrator has not written state since " + fmtClock(gen) + " ("));
         var ago = relSpan("ago", gen); ago.setAttribute("aria-hidden", "true"); t.appendChild(ago);
         t.appendChild(document.createTextNode("). The run may be stalled or finished; numbers below are as of that write."));
       } else {
@@ -712,8 +712,8 @@
     var total = Object.keys(by).reduce(function(a,k){ return a + by[k].length; }, 0);
     if(total && by.done.length === total) return {value:"Drained", sub:"all items landed", tone:"ok"};
     var e = state.eta;
-    if(num(e)) return {value: fmtClock(num(e)), rel: num(e), sub:"Manager estimate"};
-    if(str(e)) return {value: str(e), sub:"as written by the Manager", small:true};
+    if(num(e)) return {value: fmtClock(num(e)), rel: num(e), sub:"orchestrator estimate"};
+    if(str(e)) return {value: str(e), sub:"as written by the orchestrator", small:true};
     // Derived: the latest numeric ETA among items that have not landed.
     var latest = null, textEtas = 0;
     (Array.isArray(state.items) ? state.items : []).forEach(function(it){
@@ -1119,7 +1119,7 @@
     }
 
     if(!hasMore){
-      dBody.appendChild(el("p", "d-section d-sub", "The Manager has not written details, checks or history for this item yet."));
+      dBody.appendChild(el("p", "d-section d-sub", "The orchestrator has not written details, checks or history for this item yet."));
     }
     if(keepScroll) dBody.scrollTop = scrollTop;
   }
@@ -1181,7 +1181,7 @@
     s.onerror = function(){
       cleanup(s);
       // Absent or unreadable state.js. One miss can be a transient gap during
-      // the Manager's atomic mv; a persistent absence means no run is active
+      // the orchestrator's atomic mv; a persistent absence means no run is active
       // (never opened, or finished and cleaned up). Tolerate the blip, then
       // fall back to the no-run state. The page never errors on absent state.
       errStreak++;

@@ -64,7 +64,7 @@ script to a stable, version-independent path under the user's home and points
 
    (`/ABSOLUTE/HOME` is the resolved `$HOME`. `refreshInterval` is in **seconds**
    (minimum 1) — a small value keeps the line's elapsed and staleness fresh
-   between reconciles; the script is cheap (no jq, no git read), so 3 is
+   between ledger writes; the script is cheap (no jq, no git read), so 3 is
    comfortable and stays well under the ~90 s staleness window.)
 
    - **No `statusLine` yet** → add the team block verbatim. Preserve every other

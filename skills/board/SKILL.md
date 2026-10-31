@@ -4,7 +4,7 @@ description: >
   Open this project's delivery progress board — the zero-runtime browser page
   that renders a live run's pipeline, agent rail, and event feed from the
   orchestrator's state ledger. Copies the page into place if it is missing and
-  opens it over file://; the page shows "no run active" until the orchestrator
+  opens it over file://; the page shows "No run is active" until the orchestrator
   writes state, so it is safe to open with no run in flight. Use when the user
   asks to see, open, or reopen the board, dashboard, or progress page, or
   invokes /board.
@@ -39,7 +39,7 @@ request is the owner asking for it again.
 
 2. Give the user that URL as a clickable link, so a terminal that cannot pop a
    browser still gives them a way in. If no `state.js` sits beside the page
-   (no run is active, or a finished run was cleaned up), the page renders **"no
+   (no run is active, or a finished run was cleaned up), the page renders **"No
    run is active"** and waits — it never errors on a missing or partial state
    file.
 

@@ -34,7 +34,7 @@ merit. Your working directory is your dedicated worktree, reset clean and
 detached at the current default-branch tip by the orchestrator before you
 started. You never touch the main working tree: the orchestrator fast-forwards
 it to the sha you report, in the same step that syncs its index and checkout,
-and asserts it is clean afterwards.
+and leaves the owner's uncommitted edits untouched.
 
 ## Landing sequence
 

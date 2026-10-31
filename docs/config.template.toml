@@ -21,7 +21,8 @@ dir = "docs/backlog"
 
 [gate]
 # Scoped gate: what a developer runs in its worktree for a normal change, and a
-# reviewer re-runs. Full gate: what QA runs on every new default-branch tip.
+# reviewer re-runs. Full gate: what the orchestrator runs on every new
+# default-branch tip (QA root-causes a new failure).
 # Each entry is one shell command, run with `sh -c` in the worktree.
 scoped = []
 full = []
@@ -65,7 +66,8 @@ ui-inspector = 3600
 qa_gate = 3600
 [limits.liveness]
 poll_seconds = 5
-# A run whose output has not grown for this long is treated as dead.
+# On an engine whose adapter streams events (`streams = true`), a run whose
+# output has not grown for this long is treated as dead.
 stall_seconds = 900
 # Times a failed role run is re-dispatched (a developer's with adopt) before it escalates.
 adopt_attempts = 2

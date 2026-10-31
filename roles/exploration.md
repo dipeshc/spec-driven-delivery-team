@@ -128,7 +128,7 @@ Create it if it does not exist. You **must** keep it current as you go:
   promoted. **Promotion is the team's job, not yours**: the owner's pick is
   filed as a backlog item referencing the spike's branch/tag + sha, and a team
   developer adapts it onto the current default branch as one reviewed commit —
-  the spike pays back the quality gate it skipped. You never merge, cherry-pick,
+  the spike pays back the review pipeline it skipped. You never merge, cherry-pick,
   or file the promotion item yourself.
 - Never delete a still-live exploration from the record; it is deleted only when
   the underlying idea is deliberately abandoned.

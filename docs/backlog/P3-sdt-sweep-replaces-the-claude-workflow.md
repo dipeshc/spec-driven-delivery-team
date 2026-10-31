@@ -8,7 +8,7 @@ filing.
 
 **Evidence:** `extras/claude/workflows/consistency-sweep.js` uses the
 Workflow tool's `agent()`, `pipeline()` and `parallel()`; `bin/sdt` has a
-`run_role()` primitive and concurrent `RoleRun` handling in `Orchestrator`
+`Project.start_run()` primitive and concurrent `RoleRun` handling in `Orchestrator`
 but no `sweep` command. `docs/architecture.md`'s components table lists the
 workflow as Claude-only.
 

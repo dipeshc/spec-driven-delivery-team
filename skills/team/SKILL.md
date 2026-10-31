@@ -110,8 +110,8 @@ re-dispatched.
    keeps it polling for new items instead. It refuses to start while another
    run holds the project (`.delivery-team/runs/sdt.pid`): never two
    orchestrators against one tree.
-3. **`sdt board`** — open the progress board once per run (the page shows "no
-   run active" until the first ledger write, then live-polls it). The owner
+3. **`sdt board`** — open the progress board once per run (the page shows "No
+   run is active" until the first ledger write, then live-polls it). The owner
    reopens it with the `board` skill; do not reopen a tab they closed.
 4. **Report from the ledger, not from memory:** `sdt status` prints the run
    state — items by stage with assignee, model and time in stage, the agents'

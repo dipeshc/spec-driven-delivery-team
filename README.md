@@ -29,7 +29,8 @@ in git, not in anyone's memory.
 
 ## The team
 
-Five roles, each deliberately narrow, plus the orchestrator that runs them:
+Five core roles, each deliberately narrow, plus the Researcher, the consistency
+check and the orchestrator that runs them:
 
 | Role | Does | Never |
 |---|---|---|
@@ -72,7 +73,7 @@ for visual QA — live in `roles/` beside the team and run through `sdt role`.
 
 Every role runs as **one headless, worktree-confined process** of the engine
 the project names in its config; an adapter file per engine says how to run
-that CLI (`adapters/claude.toml` and `agy.toml` have landed real runs;
+that CLI (`adapters/claude.toml` and `adapters/agy.toml` have landed real runs;
 `codex`, `gemini`, `cursor`, `opencode` and `copilot` ship best-effort and
 say so). The orchestrator is the
 only component that talks to an engine, so switching engines — or running
@@ -110,9 +111,10 @@ single-plugin marketplace), which also puts `sdt` on the Bash tool's PATH:
 ```
 
 You'll need a git repo and a frontier-tier model for the judgment roles
-(Manager, Reviewer, Merge-Clerk, QA) — developers run on the mid tier unless
-triage raises them. You stay in the loop for owner decisions: anything a role
-cannot decide is moved to `blocked/` with its reason.
+(Manager, Reviewer, Merge-Clerk, QA, Researcher, consistency check) —
+developers run on the mid tier unless triage raises them. You stay in the loop
+for owner decisions: anything a role cannot decide is moved to `blocked/` with
+its reason.
 
 ## Going deeper
 

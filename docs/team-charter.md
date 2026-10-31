@@ -163,8 +163,9 @@ confined the same way: its working directory plus the explicit directories the
 orchestrator grants (the repository's git common directory, and for a Reviewer
 the item worktrees under review). Confinement is the orchestrator's, never the
 engine's own sandbox: approvals are bypassed inside that boundary so a run never
-waits on a prompt nobody can answer, and the engine never sees the main working
-tree.
+waits on a prompt nobody can answer, and the main working tree is never a
+granted directory: a run reads what its context points at there and never
+writes it.
 
 Engine output is an **untrusted contributor diff**: the same review, the same
 guards, the same gates as any other change, whatever engine produced it. An
@@ -284,7 +285,9 @@ returns in its result for the orchestrator to apply.
 3. **The orchestrator, housekeeping** — writes that touch no working code,
    every one explicit-path: backlog item files returned by the QA, Researcher
    or consistency check as `{filename, body}` pairs; moving an item to
-   `blocked/` with its reason appended; worktree and branch lifecycle; and the
+   `blocked/` with its reason appended; the known-failures append and commit;
+   deleting a researched item; items filed from any role's `sdt role
+   --file-items` run; worktree and branch lifecycle; and the
    **progress ledger** (`<repo>/.delivery-team/progress/state.js`, its
    `state.json` twin and the copied `dashboard.html`) — runtime state written
    on every tick, never committed. The orchestrator is the **only** writer
@@ -365,7 +368,7 @@ window.TEAM_STATE = {
   eta: 1723656000,                  // optional: epoch seconds the whole run is expected
                                     //   to drain, or short text; absent = unknown
   agents: [                         // one row per known role
-    { role: "Manager", state: "reconciling", lastSignalAt: 1723645160 }
+    { role: "Orchestrator", state: "dispatching", lastSignalAt: 1723645160 }
     // state is free human text; lastSignalAt is epoch seconds of the last real
     // liveness signal (0/absent = never/idle).
   ],

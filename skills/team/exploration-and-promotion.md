@@ -27,7 +27,8 @@ the spike. A team Developer adapts it onto the current default branch as one
 commit; the Reviewer reviews it at production standard; the Merge-Clerk judges
 it landable, the orchestrator lands it and runs the full gate on the result.
 
-Spikes skip the quality gate on the way out and pay it back at promotion: the
-promoting change runs the gate (**full** if it is cross-cutting, plus any
-repo-wide invariant guard it triggers) like any other change. **Never
+Spikes skip the review pipeline (independent review, the Merge-Clerk, the full
+gate on a landed tip), not the gate for what they touched; the promoting
+change runs the review pipeline and the gate (**full** if it is cross-cutting,
+plus any repo-wide invariant guard it triggers) like any other change. **Never
 cherry-pick a spike to the default branch yourself.**
