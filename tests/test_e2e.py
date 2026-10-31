@@ -78,6 +78,19 @@ def run_sdt(repo: Path, *args: str, env_extra: dict[str, str] | None = None) -> 
     )
 
 
+def role_runs(repo: Path, role: str) -> list[str]:
+    """The run ids of every run of `role`, from the prompts the orchestrator keeps."""
+    names = (p.name.removesuffix(".prompt.md") for p in (repo / ".delivery-team" / "runs").glob("*.prompt.md"))
+    return sorted(n for n in names if n.split("-", 1)[1].startswith(role + "-"))
+
+
+def drained(proc: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    final = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert final["message"] == "DRAINED"
+    return final
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     return make_repo(
@@ -192,6 +205,92 @@ def test_role_keeps_notes_and_sends_run_consistency(repo: Path) -> None:
     assert result["received"]["tip"] == git("rev-parse", "main", cwd=repo)
     notes = repo / ".delivery-team" / "notes" / "consistency-check.md"
     assert "audited up to stub-marker" in notes.read_text()
+
+
+def test_failed_triage_dispatches_nothing(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P2-triage-fails"])
+    final = drained(run_sdt(repo, "run"))
+    assert final["landed"] == 0
+    assert final["blocked"] == ["P2-triage-fails"]
+    # adopt_attempts = 1: the failed triage is asked once more, then the item blocks
+    assert len([r for r in role_runs(repo, "manager") if r.endswith("-triage")]) == 2
+    assert role_runs(repo, "developer") == []
+    assert git("branch", "--list", "item/*", cwd=repo) == ""
+    text = (repo / "docs" / "backlog" / "blocked" / "P2-triage-fails.md").read_text()
+    assert "⛔" in text and "triage failed after 2 attempt(s): no fenced json block" in text
+
+
+def test_failing_reviewer_escalates(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P2-review-fails"])
+    final = drained(run_sdt(repo, "run"))
+    assert final["blocked"] == ["P2-review-fails"]
+    assert len(role_runs(repo, "reviewer")) == 2, "re-dispatched adopt_attempts times, never forever"
+    decisions = [r for r in role_runs(repo, "manager") if r.endswith("-P2-review-fails")]
+    assert len(decisions) == 1
+    prompt = (repo / ".delivery-team" / "runs" / f"{decisions[0]}.prompt.md").read_text()
+    assert '"event": "REVIEWER-FAILED"' in prompt and '"attempts": 2' in prompt
+    text = (repo / "docs" / "backlog" / "blocked" / "P2-review-fails.md").read_text()
+    assert "⛔" in text and "blocked after REVIEWER-FAILED" in text
+
+
+def test_failed_qa_run_releases_the_failure(tmp_path: Path) -> None:
+    # The second item needs a second review round, so it lands after the red one.
+    repo = make_repo(tmp_path, ["P1-red-qa-fails", "P2-twice-after"])
+    proc = run_sdt(repo, "run")
+    final = drained(proc)
+    assert "qa-failed: red at" in proc.stdout and "qa failed after 2 attempt(s)" in proc.stdout
+    # two failed runs on the first red tip, then the second red with the same failure reached QA again
+    assert len(role_runs(repo, "qa")) == 3
+    subjects = git("log", "--no-show-signature", "--format=%s", "main", cwd=repo).splitlines()
+    assert any(s.startswith("chore(backlog): file 1 item(s) — regression") for s in subjects), subjects
+    assert final["landed"] == 3  # the red item, the second item, and the regression fix
+
+
+def test_qa_blocked_reason_is_surfaced(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P1-red-qa-blocks"])
+    proc = run_sdt(repo, "run")
+    final = drained(proc)
+    assert final["landed"] == 1 and final["blocked"] == []
+    reason = "the gate needs a service this environment lacks"
+    state = json.loads((repo / ".delivery-team" / "progress" / "state.json").read_text())
+    qa = next(a for a in state["agents"] if a["role"] == "QA")
+    assert qa["state"].endswith("qa blocked: " + reason), qa
+    assert any(e["kind"] == "qa-blocked" and reason in e["text"] for e in state["events"]), state["events"]
+    assert "regression filed" not in proc.stdout
+
+
+def test_research_failure_blocks_and_no_item_retires(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P2-research-fails", "P2-research-dissolves"])
+    final = drained(run_sdt(repo, "run"))
+    assert final["landed"] == 0
+    assert final["blocked"] == ["P2-research-fails"]
+    backlog = repo / "docs" / "backlog"
+
+    # a failed research run is asked once more, then its item blocks with the engine error
+    assert len([r for r in role_runs(repo, "researcher") if r.endswith("-P2-research-fails")]) == 2
+    text = (backlog / "blocked" / "P2-research-fails.md").read_text()
+    assert "⛔" in text and "research failed after 2 attempt(s): no fenced json block" in text
+
+    # NO-ITEM retires the item in one commit that says why
+    assert not (backlog / "P2-research-dissolves.md").exists()
+    assert not (backlog / "blocked" / "P2-research-dissolves.md").exists()
+    rel = "docs/backlog/P2-research-dissolves.md"
+    sha = git("log", "--no-show-signature", "-1", "--format=%H", "main", "--", rel, cwd=repo)
+    message = git("log", "--no-show-signature", "-1", "--format=%B", sha, cwd=repo)
+    assert message.startswith("chore(backlog): retire P2-research-dissolves — already true")
+    assert "Finding: already true: src/ has the behaviour" in message and "Why: nothing to change" in message
+    assert git("show", "--no-show-signature", "--name-status", "--format=", sha, cwd=repo) == f"D\t{rel}"
+
+
+def test_failed_consistency_check_is_retried_then_reported(tmp_path: Path) -> None:
+    # consistency_every = 2: the second landing starts the check, on a tip holding the marked item.
+    repo = make_repo(tmp_path, ["P1-consistency-fails", "P2-plain"])
+    final = drained(run_sdt(repo, "run"))
+    assert final["landed"] == 2
+    assert len(role_runs(repo, "consistency-check")) == 2, "re-dispatched adopt_attempts times, then reported"
+    state = json.loads((repo / ".delivery-team" / "progress" / "state.json").read_text())
+    failed = [e for e in state["events"] if e["kind"] == "consistency-failed"]
+    assert len(failed) == 1 and "after 2 attempt(s)" in failed[0]["text"], state["events"]
 
 
 def test_status_without_run(repo: Path) -> None:

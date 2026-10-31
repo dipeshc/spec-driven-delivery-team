@@ -67,7 +67,7 @@ qa_gate = 3600
 poll_seconds = 5
 # A run whose output has not grown for this long is treated as dead.
 stall_seconds = 900
-# Times a dead developer run is re-dispatched with adopt before the item blocks.
+# Times a failed role run is re-dispatched (a developer's with adopt) before it escalates.
 adopt_attempts = 2
 
 [qa]

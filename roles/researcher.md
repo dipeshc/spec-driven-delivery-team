@@ -67,4 +67,5 @@ not worth doing):
 ```
 
 The orchestrator writes and commits the files and retires the originating
-item; you write nothing to the main working tree.
+item either way — for `NO-ITEM`, in a commit carrying your `finding` and
+`why`; you write nothing to the main working tree.

@@ -390,6 +390,45 @@ def test_item_moved_back_out_of_blocked_is_triaged_again(
     assert orch.items["P1-a"].stage == "queued" and not orch.items["P1-a"].parked
 
 
+def fail_triage(sdt: ModuleType, orch: Any, request: dict[str, Any]) -> None:
+    run = SimpleNamespace(role=SimpleNamespace(name="manager"), tag="triage", payload=request)
+    orch.on_manager(run, sdt.RunResult(ok=False, error="engine exited 1"))
+
+
+def test_failed_triage_of_held_items_retries_then_blocks(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch, requests = triage_orchestrator(sdt, tmp_path, monkeypatch, ["P1-a", "P2-b"])
+    hold = {"action": "hold", "reason": "waits on in-flight work"}
+    orch.intake()
+    fail_triage(sdt, orch, requests[-1])
+    orch.intake()
+    answer_triage(sdt, orch, requests[-1], [{"slug": "P1-a", **hold}, {"slug": "P2-b", **hold}])
+    assert orch.triage_failures == {}, "a triage that settles its items resets their bound"
+
+    (orch.p.backlog / "P3-c.md").write_text("# P3-c\n")
+    commit_all(sdt, orch.p.root, "chore(backlog): file P3-c")
+    for _ in range(orch.cfg.adopt_attempts):
+        orch.intake()
+        assert triaged_slugs(requests[-1]) == ["P1-a", "P2-b", "P3-c"]
+        fail_triage(sdt, orch, requests[-1])
+        assert orch.retriage
+        assert orch.items["P1-a"].held and orch.items["P2-b"].held and "P3-c" not in orch.items
+        sent = len(requests)
+        orch.dispatch_ready()
+        assert len(requests) == sent, "a failed triage dispatches nothing"
+
+    orch.intake()
+    fail_triage(sdt, orch, requests[-1])
+    assert not orch.retriage and orch.triage_failures == {}
+    assert sorted(orch.items) == ["P1-a", "P2-b", "P3-c"]
+    reason = f"triage failed after {orch.cfg.adopt_attempts + 1} attempt(s): engine exited 1"
+    for slug in ("P1-a", "P2-b", "P3-c"):
+        assert orch.items[slug].stage == "blocked" and not orch.items[slug].held
+        assert reason in (orch.p.backlog / "blocked" / f"{slug}.md").read_text()
+        assert not (orch.p.backlog / f"{slug}.md").exists()
+
+
 # ---- QA gate
 
 
@@ -589,6 +628,23 @@ def test_role_worktree_refuses_a_tree_a_live_run_works_in(sdt: ModuleType, orch:
     orch.start(SimpleNamespace(role=SimpleNamespace(name="merge-clerk"), cwd=wt, tag="t"))
     assert orch.role_worktree("merge-clerk", "main") is None
     assert (wt / "mid-rebase").exists()
+
+
+def test_failed_run_redispatch_waits_for_a_held_tree(sdt: ModuleType, orch: Any) -> None:
+    tip = head(sdt, orch.p.root)
+    qa = orch.p.ensure_detached_worktree("qa")
+    holder = SimpleNamespace(role=SimpleNamespace(name="qa"), cwd=qa, tag="other")
+    orch.start(holder)
+    failed = SimpleNamespace(role=SimpleNamespace(name="qa"), tag=tip[:8], payload={"tip": tip, "failed_commands": []})
+    orch.on_qa(failed, sdt.RunResult(ok=False, error="engine exited 1"))
+    assert orch.started == [] and orch.qa_failures == {tip: 1}
+    orch.dispatch_deferred()
+    assert orch.started == []
+    orch.runs.remove(holder)
+    assert not orch.drained(), "a deferred re-dispatch was dropped"
+    orch.dispatch_deferred()
+    (retry,) = orch.started
+    assert retry.cwd == qa and retry.payload is failed.payload and orch.deferred_runs == []
 
 
 def test_manager_starts_at_the_moved_tip(sdt: ModuleType, orch: Any) -> None:

@@ -105,11 +105,20 @@ task, as the reading rule above says.
 fenced ```json block holding an object whose `message` key names a payload
 from the [message table](#message-schemas--the-canonical-payload-table). The
 orchestrator parses the last such block and nothing else; a run with no block,
-an unparsable block, or an engine failure is a failed run, re-dispatched or
-escalated by the orchestrator, never read as a verdict. A failed run's reason
-quotes the engine's own error line from the run log (the first error-shaped
-line, else the last non-empty one), so a blocked item explains itself. Text
-before the block is for the log.
+an unparsable block, or an engine failure is a failed run, never read as a
+verdict. A failed run's reason quotes the engine's own error line from the run
+log (the first error-shaped line, else the last non-empty one), so a blocked
+item explains itself. Every failed run follows one policy: the orchestrator
+re-dispatches it, up to `adopt_attempts` times per item (per tip for QA and the
+consistency check), then escalates. A Developer, Reviewer or Merge-Clerk
+failure escalates to the Manager as a `DECISION-REQUEST` (`DEVELOPER-FAILED`,
+`REVIEWER-FAILED`, `MERGE-CLERK-FAILED`). A failure with no Manager ruling to
+fall back on — triage, a Manager decision, QA, the Researcher, the consistency
+check — leaves a visible outcome instead: the affected items are blocked with
+the engine error as the ⛔ reason; the QA gate state stays red with the error
+and the next red with the same failures goes to QA again; a consistency check
+records a failure event, with the error, in the run's events. A failed triage
+dispatches nothing. Text before the block is for the log.
 
 **Capability tiers.** Each role file declares its `tier`: `frontier` for the
 judgment roles (Manager, Reviewer, Merge-Clerk, QA, Researcher, consistency
@@ -121,12 +130,13 @@ the ledger records it.
 **Timeouts and liveness.** Every run has a wall-clock budget and, on an engine
 whose adapter streams events (`streams = true`), a stall limit judged by log
 growth (`config.toml` `[limits]`); an engine that is silent until it finishes
-is judged by the budget alone. The orchestrator kills a run that exceeds either and
-re-dispatches it with `adopt: true`, bounded by `adopt_attempts`, after which
-triage decides. There is no resume: a re-dispatched role reconstructs its state
-from the worktree and branch it adopts, which is why git, not a run's context,
-is the durable state. A Reviewer batch that times out is re-dispatched whole; a
-timeout is never a verdict.
+is judged by the budget alone. The orchestrator kills a run that exceeds
+either; the killed run is a failed run, re-dispatched (a Developer with
+`adopt: true`) and escalated by the policy above. There is no resume: a
+re-dispatched role reconstructs its state from the worktree and branch it
+adopts, which is why git, not a run's context, is the durable state. A
+Reviewer batch that times out is re-dispatched whole; a timeout is never a
+verdict.
 
 **Notes.** Each role has a notes file (`.delivery-team/notes/<role>.md`) that
 the orchestrator includes in every prompt of that role; a run may return
@@ -581,7 +591,7 @@ by the orchestrator; any message may carry `notes_for_next_run`.
 |---|---|---|
 | Orchestrator → Manager | `TRIAGE-REQUEST` | `{items[{slug, priority, path, text}], in_flight[{slug, stage, branch, ports}], guards[{cmd, when}], ports_exclusive, engine_network}` |
 | Manager → Orchestrator | `TRIAGE` | `{items[{slug, action: dispatch \| hold \| block \| research, tier, ports, group[], governing_docs[], guards[], sharpen_first, reason}]}` — one entry per new item; `group` names the siblings landing with it |
-| Orchestrator → Manager | `DECISION-REQUEST` | `{event, item, items[], branch, rounds, detail, item_text}` — `event` is `BLOCKED`, `DEVELOPER-FAILED`, `REVIEW-ROUNDS-EXCEEDED`, `MERGE-BLOCKED`, `MERGE-CLERK-FAILED`, `UNEXPECTED-PAYLOAD` or `UNEXPECTED-VERDICT` |
+| Orchestrator → Manager | `DECISION-REQUEST` | `{event, item, items[], branch, rounds, detail, item_text}` — `event` is `BLOCKED`, `DEVELOPER-FAILED`, `REVIEW-ROUNDS-EXCEEDED`, `REVIEWER-FAILED`, `MERGE-BLOCKED`, `MERGE-CLERK-FAILED`, `UNEXPECTED-PAYLOAD` or `UNEXPECTED-VERDICT` |
 | Manager → Orchestrator | `DECISION` | `{action: block \| retry \| adopt, reason}` |
 | Orchestrator → Developer | `IMPLEMENT` | `{items[{slug, path, text}], branch, worktree, base, adopt, ports, governing_docs[], guards[], sharpen_first, scoped_gate[], resume?}` — `resume` carries `FEEDBACK {comments[], required[]}`, `REBASE {onto}`, `RETRY {reason}` or `ADOPT {reason}` |
 | Developer → Orchestrator | `READY-FOR-REVIEW` | `{items[], branch, worktree, head, rebased_onto, single_commit, verification[{cmd, result}], ports_used, notes}` |
@@ -592,7 +602,7 @@ by the orchestrator; any message may carry `notes_for_next_run`.
 | Merge-Clerk → Orchestrator | `LANDABLE` | `{items[], sha, rebased, verification[]}` — the orchestrator fast-forwards the default branch to `sha` |
 | Merge-Clerk → Orchestrator | `MERGE-BLOCKED` / `REBASE-REQUIRED` | `{reason}` (surfaced immediately) / `{items[], branch, base, reason}` (the clerk's rebase hit real conflicts) |
 | Orchestrator → QA | `REGRESSION-REQUEST` | `{tip, failed_commands[], log_path, log_tail, last_green_tip}` — sent only on a **new** full-gate failure; the orchestrator runs the gate itself on every new tip — each sha it lands and each tip landed outside the run (the direct lane), skipping only a tip whose new commits are all its own housekeeping — and filters the known-failures file |
-| QA → Orchestrator | `REGRESSION` / `ENVIRONMENT` / `QA-BLOCKED` | `{items[{filename, body}], first_bad_sha, test}` / `{patterns[], reason}` (the orchestrator appends the patterns to the known-failures file) / `{reason}` |
+| QA → Orchestrator | `REGRESSION` / `ENVIRONMENT` / `QA-BLOCKED` | `{items[{filename, body}], first_bad_sha, test}` / `{patterns[], reason}` (the orchestrator appends the patterns to the known-failures file) / `{reason}` (shown in the QA gate state until the next gate run) |
 | Orchestrator → consistency check | `RUN-CONSISTENCY` | `{tip}` (trigger only; the pass's scope and audit range are the role's own) |
 | consistency check → Orchestrator | `FINDINGS` | `{items[{filename, body}]}` |
 | Orchestrator → Researcher | `RESEARCH-REQUEST` | `{item, question, item_text}` |

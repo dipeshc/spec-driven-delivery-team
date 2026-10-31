@@ -140,6 +140,13 @@ Return:
   asking for the same thing repeatedly means the item or the governing doc is
   unclear — `block` with the open question; a developer that nearly converged
   gets one `retry`.
+- **`REVIEWER-FAILED`** (the review run died, or returned no verdict for this
+  item, after the re-dispatch attempts; the detail names the error, the log
+  and the attempt count): a failed review says nothing about the branch.
+  `retry` once when the error looks transient (a timeout, a rate limit) — the
+  orchestrator sends the item back to review, not to a developer. A second
+  occurrence, or an error only the owner can fix (the engine is unreachable,
+  unauthenticated or misconfigured), is `block` naming it.
 - **`MERGE-BLOCKED` / `MERGE-CLERK-FAILED`**: the reason names the condition
   (unsigned commit, attribution trailer, a dirty main tree, a real conflict).
   A condition the developer can repair (amend, rebase by hand) is `retry`

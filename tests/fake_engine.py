@@ -13,6 +13,13 @@ asks for. Behaviour is keyed on item slugs so a test can stage every path:
 - slugs starting ``P3-group-``   → triage groups them into one branch
 - a slug containing ``stall``    → the developer sleeps past the stall limit once
 - a slug containing ``red``      → implemented so the test's gate fails (a regression)
+- a slug containing ``triage-fails`` → every triage run carrying it fails (no result block)
+- a slug containing ``review-fails`` → every review of it fails
+- a slug containing ``research-fails`` / ``research-dissolves`` → triage sends it to
+  research; the Researcher fails every run / returns ``NO-ITEM``
+- a slug containing ``qa-fails``  → every QA run on the first red tip holding it fails
+- a slug containing ``qa-blocks`` → QA answers ``QA-BLOCKED`` on the first red tip holding it
+- a slug containing ``consistency-fails`` → every consistency-check run on a tip holding it fails
 
 With ``FAKE_REVIEW_WAIT_SECONDS`` set, the first reviewer run waits up to that
 long for a second one to start, so a run with two reviewer instances overlaps.
@@ -61,6 +68,22 @@ def wait_for(name: str, value: int, seconds: float) -> None:
         time.sleep(0.2)
 
 
+def first_seen(name: str, value: str) -> str:
+    """The value first recorded under `name` in FAKE_STATE_DIR; records `value` when there is none."""
+    state = Path(os.environ.get("FAKE_STATE_DIR", "/tmp/fake-engine"))
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / name
+    if not path.is_file():
+        path.write_text(value)
+    return path.read_text()
+
+
+def fail() -> int:
+    """End the run without a result block, as an engine that died mid-run does."""
+    print("Error: the stub engine stopped before producing a result.")
+    return 1
+
+
 def main() -> int:
     prompt = sys.stdin.read()
     role_match = re.search(r"^- role: (\S+)$", prompt, re.MULTILINE)
@@ -81,25 +104,21 @@ def main() -> int:
     if role == "merge-clerk":
         return merge_clerk(payload, cwd, base)
     if role == "qa":
-        reply(
-            {
-                "message": "REGRESSION",
-                "items": [
-                    {
-                        "filename": f"P0-regression-{payload.get('tip', '')[:8]}.md",
-                        "body": f"# Regression at {payload.get('tip')}\n\nFailed: {payload.get('failed_commands')}\n",
-                    }
-                ],
-            }
-        )
-        return 0
+        return qa(payload, cwd)
     if role == "consistency-check":
+        if any("consistency-fails" in p.name for p in (cwd / "src").glob("*.txt")):
+            return fail()
         reply(
             {"message": "FINDINGS", "items": [], "received": payload, "notes_for_next_run": "audited up to stub-marker"}
         )
         return 0
     if role == "researcher":
         slug = payload.get("item", "x")
+        if "research-fails" in slug:
+            return fail()
+        if "research-dissolves" in slug:
+            reply({"message": "NO-ITEM", "finding": "already true: src/ has the behaviour", "why": "nothing to change"})
+            return 0
         reply(
             {
                 "message": "FILED",
@@ -120,6 +139,8 @@ def manager(payload: dict) -> int:
     if payload.get("message") == "DECISION-REQUEST":
         reply({"message": "DECISION", "action": "block", "reason": f"blocked after {payload.get('event')}"})
         return 0
+    if any("triage-fails" in i["slug"] for i in payload.get("items", [])):
+        return fail()
     decisions = []
     grouped = [i["slug"] for i in payload.get("items", []) if str(i["slug"]).startswith("P3-group-")]
     open_slugs = [str(i["slug"]) for i in payload.get("items", [])] + [
@@ -142,6 +163,8 @@ def manager(payload: dict) -> int:
             d.update(action="block", reason="needs an owner decision")
         if "held" in slug and waited_on:
             d.update(action="hold", reason="waits on " + ", ".join(waited_on))
+        if "research-fails" in slug or "research-dissolves" in slug:
+            d.update(action="research", reason="is this already true?")
         if slug == grouped[0] if grouped else False:
             d["group"] = grouped[1:]
         decisions.append(d)
@@ -220,6 +243,8 @@ def developer(payload: dict, cwd: Path, base: str) -> int:
 
 
 def reviewer(payload: dict) -> int:
+    if any("review-fails" in s for req in payload.get("requests", []) for s in req["items"]):
+        return fail()
     wait = float(os.environ.get("FAKE_REVIEW_WAIT_SECONDS", "0"))
     if counter("reviewer-runs") == 0 and wait:
         wait_for("reviewer-runs", 2, wait)
@@ -248,6 +273,28 @@ def reviewer(payload: dict) -> int:
                 }
             )
     reply({"message": "REVIEW-VERDICTS", "verdicts": verdicts})
+    return 0
+
+
+def qa(payload: dict, cwd: Path) -> int:
+    tip = str(payload.get("tip", ""))
+    marks = [p.name for p in (cwd / "src").glob("*.txt")]
+    if any("qa-fails" in m for m in marks) and first_seen("qa-fails-tip", tip) == tip:
+        return fail()
+    if any("qa-blocks" in m for m in marks) and first_seen("qa-blocks-tip", tip) == tip:
+        reply({"message": "QA-BLOCKED", "reason": "the gate needs a service this environment lacks"})
+        return 0
+    reply(
+        {
+            "message": "REGRESSION",
+            "items": [
+                {
+                    "filename": f"P0-regression-{tip[:8]}.md",
+                    "body": f"# Regression at {tip}\n\nFailed: {payload.get('failed_commands')}\n",
+                }
+            ],
+        }
+    )
     return 0
 
 

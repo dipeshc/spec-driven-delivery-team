@@ -914,9 +914,10 @@ class Project:
 
     # -- backlog
 
-    def commit(self, message: str, *paths: Path) -> None:
+    def commit(self, message: str, *paths: Path, body: str = "") -> None:
         """Commit `paths` explicit-path in the main tree, counted so a run can tell its own commits apart."""
-        git("commit", "-q", "-m", message, "--", *map(str, paths), cwd=self.root)
+        bodies = ["-m", body] if body else []
+        git("commit", "-q", "-m", message, *bodies, "--", *map(str, paths), cwd=self.root)
         self.commits += 1
 
     def scan_backlog(self) -> list[BacklogItem]:
@@ -961,6 +962,14 @@ class Project:
             fh.write(f"\n{BLOCKED_MARK} **Blocked ({time.strftime('%Y-%m-%d')}).** {reason.strip()}\n")
         git("add", "--", str(dest), cwd=self.root)
         self.commit(f"chore(backlog): block {item.slug} — {reason.strip()[:60]}", item.path, dest)
+
+    def retire_items(self, paths: list[Path], subject: str, body: str) -> None:
+        """Delete backlog item files that research retired, in one explicit-path commit."""
+        present = [p for p in paths if p.is_file()]
+        if not present:
+            return
+        git("rm", "-q", "--", *map(str, present), cwd=self.root)
+        self.commit(subject, *present, body=body)
 
     # -- landing
 
@@ -1052,7 +1061,7 @@ class Item:
     model: str = ""
     stage_entered_at: int = field(default_factory=now)
     rounds: int = 0
-    adoptions: int = 0
+    failures: dict[str, int] = field(default_factory=dict)
     land_attempts: int = 0
     note: str = ""
     detail: str = ""
@@ -1108,6 +1117,12 @@ class Orchestrator:
         self.housekeeping: list[tuple[str, Callable[[], None]]] = []
         self.open_regressions: dict[str, str] = {}
         self.regression_slugs: dict[str, str] = {}
+        self.triage_failures: dict[str, int] = {}
+        self.qa_failures: dict[str, int] = {}
+        self.consistency_failures: dict[str, int] = {}
+        self.retriage = False
+        # Re-dispatches of failed runs whose role worktree a live run still holds.
+        self.deferred_runs: list[tuple[str, str, Callable[[Path], RoleRun]]] = []
 
     # -- events and ledger
 
@@ -1232,14 +1247,30 @@ class Orchestrator:
             n += 1
         return path
 
+    def redispatch(self, name: str, ref: str, start: Callable[[Path], RoleRun]) -> None:
+        """Start a failed run again in the role worktree `name`, reset to `ref`; while a live run holds it, wait a tick."""
+        wt = self.role_worktree(name, ref)
+        if wt is None:
+            self.deferred_runs.append((name, ref, start))
+            return
+        self.start(start(wt))
+
+    def dispatch_deferred(self) -> None:
+        deferred, self.deferred_runs = self.deferred_runs, []
+        for name, ref, start in deferred:
+            self.redispatch(name, ref, start)
+
     # -- intake
 
     def intake(self) -> None:
         """Triage new, held and unblocked backlog items through the manager role; adopt in-flight branches."""
+        if self.manager_busy:
+            return
+        self.retriage = False
         backlog = self.p.scan_backlog()
         known = {s for it in self.items.values() if not it.retriageable() for s in it.slugs}
         fresh = [b for b in backlog if b.slug not in known]
-        if not fresh or self.manager_busy:
+        if not fresh:
             return
         sent = {b.slug for b in fresh}
         in_flight = [
@@ -1339,16 +1370,45 @@ class Orchestrator:
                     item.note = "adopting existing branch"
         for slug, b in fresh.items():
             if slug not in seen:
-                item = Item(
-                    slug=slug,
-                    slugs=[slug],
-                    priority=b.priority,
-                    paths=[str(b.path.relative_to(self.p.root))],
-                    texts={slug: b.text},
-                )
-                item.branch = self.p.item_branch(slug)
+                item = self.fresh_item(b)
                 item.enter("queued", "triaged by default")
                 self.items[slug] = item
+
+    def fresh_item(self, b: BacklogItem) -> Item:
+        item = Item(
+            slug=b.slug,
+            slugs=[b.slug],
+            priority=b.priority,
+            paths=[str(b.path.relative_to(self.p.root))],
+            texts={b.slug: b.text},
+        )
+        item.branch = self.p.item_branch(b.slug)
+        return item
+
+    def triage_failed(self, fresh: dict[str, BacklogItem], error: str) -> None:
+        """A failed triage dispatches nothing: triage again, then block what is still untriaged."""
+        # As in apply_triage, a slug settled since the request went out keeps its item.
+        known = {s for it in self.items.values() if not it.retriageable() for s in it.slugs}
+        fresh = {s: b for s, b in fresh.items() if s not in known}
+        retrying = [slug for slug in fresh if self.retry_due(self.triage_failures, slug)]
+        if retrying:
+            self.retriage = True
+            self.event("error", f"triage failed ({error}); triaging {len(retrying)} item(s) again")
+        # A held or unblocked item keeps its entry, still undispatchable, while it is triaged again; once its
+        # attempts are spent it is replaced, as a successful triage would replace it, and blocked.
+        exhausted = {s: b for s, b in fresh.items() if s not in retrying}
+        for old in [it.slug for it in self.items.values() if exhausted.keys() & set(it.slugs)]:
+            del self.items[old]
+        for slug, b in exhausted.items():
+            attempts = self.triage_failures.pop(slug)
+            item = self.fresh_item(b)
+            self.items[slug] = item
+            self.block(item, f"triage failed after {attempts} attempt(s): {error}")
+
+    def retry_due(self, attempts: dict[str, int], key: str) -> bool:
+        """Count a failed run against `key`: True while it earns a re-dispatch, False once it must escalate."""
+        attempts[key] = attempts.get(key, 0) + 1
+        return attempts[key] <= self.cfg.adopt_attempts
 
     # -- dispatch
 
@@ -1468,19 +1528,33 @@ class Orchestrator:
                 if (self.p.root / str(i["path"])).is_file()
             }
             if not res.ok:
-                self.event("error", f"triage failed: {res.error}; dispatching in priority order")
-                self.apply_triage({"items": []}, fresh)
+                self.triage_failed(fresh, res.error)
                 return
             self.apply_triage(res.payload, fresh)
+            # The bound is on consecutive failures: a held item is triaged again on every backlog change.
+            for slug in fresh:
+                self.triage_failures.pop(slug, None)
             self.event("triage", f"{len(fresh)} item(s) triaged")
             return
         it = self.item_for(run)
         if it is None:
             return
+        if not res.ok and self.retry_due(it.failures, "manager"):
+            self.event("error", f"decision for {it.slug} failed ({res.error}); asking again")
+            wt = self.pooled_worktree("manager", self.p.branch)
+            self.start(self.p.start_run("manager", run.payload, cwd=wt, tag=it.slug))
+            return
         it.deciding = False
         action = str(res.payload.get("action", "block")) if res.ok else "block"
-        reason = str(res.payload.get("reason", res.error if not res.ok else ""))
-        if action == "retry":
+        if res.ok:
+            reason = str(res.payload.get("reason", ""))
+        else:
+            reason = f"decision failed after {it.failures['manager']} attempt(s): {res.error}"
+        if action in ("retry", "adopt") and run.payload.get("event") == "REVIEWER-FAILED":
+            # A reviewer failure says nothing about the branch: review it again, never re-implement it.
+            it.enter("review", f"{action}: {reason}")
+            self.review_batch.append(it.slug)
+        elif action == "retry":
             it.rounds = 0
             it.pending = {"message": "RETRY", "reason": reason}
             it.enter("queued", f"retry: {reason}")
@@ -1526,13 +1600,14 @@ class Orchestrator:
         if it is None:
             return
         if not res.ok:
-            it.adoptions += 1
-            if res.timed_out and it.adoptions <= self.cfg.adopt_attempts:
+            if self.retry_due(it.failures, "developer"):
                 it.pending = {"message": "ADOPT", "reason": res.error}
                 it.enter("queued", f"developer {res.error}; re-dispatching with adopt")
                 return
             self.ask_manager(
-                it, "DEVELOPER-FAILED", {"error": res.error, "log": str(res.log_path), "adoptions": it.adoptions}
+                it,
+                "DEVELOPER-FAILED",
+                {"error": res.error, "log": str(res.log_path), "attempts": it.failures["developer"]},
             )
             return
         msg = res.payload.get("message")
@@ -1605,8 +1680,7 @@ class Orchestrator:
         slugs = [str(r.get("items", [""])[0]) for r in run.payload.get("requests", []) if isinstance(r, dict)]
         batch = [self.items[s] for s in slugs if s in self.items]
         if not res.ok:
-            self.event("error", f"reviewer run failed ({res.error}); re-dispatching the batch")
-            self.review_batch.extend(it.slug for it in batch)
+            self.reviewer_failed(batch, res.error, res.log_path)
             return
         verdicts = res.payload.get("verdicts", [res.payload])
         by_slug: dict[str, dict[str, Any]] = {}
@@ -1620,8 +1694,7 @@ class Orchestrator:
         for it in batch:
             v = by_slug.get(it.slug) or next((x for x in verdicts if isinstance(x, dict) and len(batch) == 1), None)
             if v is None:
-                self.event("error", f"no verdict for {it.slug}; re-queuing review")
-                self.review_batch.append(it.slug)
+                self.reviewer_failed([it], f"no verdict for {it.slug}", res.log_path)
                 continue
             msg = v.get("message")
             if msg == "APPROVED":
@@ -1646,6 +1719,17 @@ class Orchestrator:
                 self.event("changes", f"{it.slug}: {msg}")
             else:
                 self.ask_manager(it, "UNEXPECTED-VERDICT", v)
+
+    def reviewer_failed(self, batch: list[Item], error: str, log_path: Path | None) -> None:
+        """A failed review is never a verdict: review again, then ask the Manager."""
+        for it in batch:
+            if self.retry_due(it.failures, "reviewer"):
+                self.event("error", f"review of {it.slug} failed ({error}); re-dispatching")
+                self.review_batch.append(it.slug)
+                continue
+            self.ask_manager(
+                it, "REVIEWER-FAILED", {"error": error, "log": str(log_path), "attempts": it.failures["reviewer"]}
+            )
 
     def dispatch_landing(self) -> None:
         it = next((i for i in self.items.values() if i.stage == "landing" and not i.pending.get("landing")), None)
@@ -1676,11 +1760,14 @@ class Orchestrator:
             return
         it.pending.pop("landing", None)
         if not res.ok:
-            it.land_attempts += 1
-            if it.land_attempts <= 3:
+            if self.retry_due(it.failures, "merge-clerk"):
                 self.event("error", f"merge-clerk failed for {it.slug}: {res.error}; retrying")
                 return
-            self.ask_manager(it, "MERGE-CLERK-FAILED", {"error": res.error, "log": str(res.log_path)})
+            self.ask_manager(
+                it,
+                "MERGE-CLERK-FAILED",
+                {"error": res.error, "log": str(res.log_path), "attempts": it.failures["merge-clerk"]},
+            )
             return
         msg = res.payload.get("message")
         if msg == "LANDABLE":
@@ -1786,24 +1873,40 @@ class Orchestrator:
         return item is None or item.stage not in ("done", "blocked")
 
     def on_qa(self, run: RoleRun, res: RunResult) -> None:
-        if not res.ok:
-            self.event("error", f"qa run failed: {res.error}")
-            self.qa_state = "red; qa role failed to file"
+        tip = str(run.payload.get("tip", ""))
+        failed = [str(c) for c in run.payload.get("failed_commands", [])]
+        signature = "|".join(sorted(failed))
+        message = res.payload.get("message") if res.ok else None
+        if message not in ("REGRESSION", "ENVIRONMENT", "QA-BLOCKED"):
+            error = res.error or f"unexpected QA message {message!r}"
+            if self.retry_due(self.qa_failures, tip):
+                self.event("error", f"qa run failed at {run.tag} ({error}); re-dispatching")
+                self.redispatch(
+                    "qa",
+                    tip,
+                    lambda wt: self.p.start_run("qa", run.payload, cwd=wt, tag=run.tag, extra_dirs=[self.p.runs_dir]),
+                )
+                return
+            # Nothing was filed, so the next red with these failures must reach QA again.
+            self.open_regressions.pop(signature, None)
+            self.qa_state = f"red at {run.tag}; qa failed after {self.qa_failures[tip]} attempt(s): {error}"
+            self.event("qa-failed", self.qa_state)
             return
-        if res.payload.get("message") == "ENVIRONMENT":
+        if message == "QA-BLOCKED":
+            self.open_regressions.pop(signature, None)
+            self.qa_state = f"red at {run.tag}; qa blocked: {res.payload.get('reason', '')}"
+            self.event("qa-blocked", self.qa_state)
+            return
+        if message == "ENVIRONMENT":
             patterns = [str(x) for x in res.payload.get("patterns", []) if str(x).strip()]
             reason = str(res.payload.get("reason", ""))
-            failed = [str(c) for c in run.payload.get("failed_commands", [])]
-            self.open_regressions.pop("|".join(sorted(failed)), None)
+            self.open_regressions.pop(signature, None)
             self.housekeep("record known failures", partial(self.p.record_known_failures, patterns, reason))
             self.qa_state = f"environment fault at {run.tag}: {reason}"
             self.event("qa-environment", self.qa_state)
             return
         items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
         tag = run.tag
-
-        failed = [str(c) for c in run.payload.get("failed_commands", [])]
-        signature = "|".join(sorted(failed))
 
         def file_them() -> None:
             filed = self.p.file_items(items, "regression at " + tag)
@@ -1836,8 +1939,22 @@ class Orchestrator:
         )
 
     def on_consistency(self, run: RoleRun, res: RunResult) -> None:
-        if not res.ok:
-            self.event("error", f"consistency-check failed: {res.error}")
+        tip = str(run.payload.get("tip", ""))
+        message = res.payload.get("message") if res.ok else None
+        if message != "FINDINGS":
+            error = res.error or f"unexpected consistency-check message {message!r}"
+            if self.retry_due(self.consistency_failures, tip):
+                self.event("error", f"consistency-check failed at {tip[:8]} ({error}); re-dispatching")
+                self.redispatch(
+                    "consistency-check",
+                    tip,
+                    lambda wt: self.p.start_run("consistency-check", run.payload, cwd=wt, tag="cadence"),
+                )
+                return
+            attempts = self.consistency_failures[tip]
+            self.event(
+                "consistency-failed", f"consistency check at {tip[:8]} failed after {attempts} attempt(s): {error}"
+            )
             return
         items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
 
@@ -1849,25 +1966,37 @@ class Orchestrator:
 
     def on_researcher(self, run: RoleRun, res: RunResult) -> None:
         it = self.item_for(run)
-        if not res.ok:
-            self.event("error", f"researcher failed for {run.tag}: {res.error}")
+        if it is None:
+            return
+        message = str(res.payload.get("message")) if res.ok else ""
+        if message not in ("FILED", "NO-ITEM"):
+            error = res.error or f"unexpected research message {message!r}"
+            if self.retry_due(it.failures, "researcher"):
+                self.event("error", f"research for {it.slug} failed ({error}); re-dispatching")
+                wt = self.pooled_worktree("researcher", self.p.branch)
+                self.start(self.p.start_run("researcher", run.payload, cwd=wt, tag=it.slug))
+                return
+            self.block(it, f"research failed after {it.failures['researcher']} attempt(s): {error}")
             return
         items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
-        message = str(res.payload.get("message"))
-        tag = run.tag
+        finding = str(res.payload.get("finding", "")).strip()
+        why = str(res.payload.get("why", "")).strip()
 
         def apply() -> None:
-            filed = self.p.file_items(items, f"research for {tag}")
-            if it is not None and message == "FILED":
-                for slug, rel in zip(it.slugs, it.paths, strict=True):
-                    path = self.p.root / rel
-                    if path.is_file():
-                        git("rm", "-q", "--", str(path), cwd=self.p.root)
-                        self.p.commit(f"chore(backlog): {slug} superseded by researched item(s)", path)
-                it.note = f"researched; filed {', '.join(filed)}"
-            self.event("research", f"{tag}: {message} {', '.join(filed)}")
+            if message == "FILED":
+                filed = ", ".join(self.p.file_items(items, f"research for {it.slug}"))
+                subject = f"chore(backlog): retire {it.slug} — superseded by researched item(s)"
+                body = f"Filed: {filed or 'nothing'}"
+                it.note = f"researched; filed {filed}"
+            else:
+                subject = f"chore(backlog): retire {it.slug} — {finding[:60] or 'research found no item'}"
+                body = f"Research found no item to file.\n\nFinding: {finding}\n\nWhy: {why}"
+                it.note = f"researched; no item: {finding}"
+            self.p.retire_items([self.p.root / rel for rel in it.paths], subject, body)
+            it.enter("done", f"retired by research ({message})")
+            self.event("research", f"{it.slug}: {message}; {it.note}")
 
-        self.housekeep(f"research {tag}", apply)
+        self.housekeep(f"research {it.slug}", apply)
 
     # -- main loop
 
@@ -1882,10 +2011,11 @@ class Orchestrator:
                 self.on_run_done(run, res)
         backlog_sha = self.p.backlog_sha()
         # A change seen while the manager is busy stays unconsumed, so held items are still re-asked.
-        if (backlog_sha != self.last_backlog_sha or not self.items) and not self.manager_busy:
+        if (backlog_sha != self.last_backlog_sha or not self.items or self.retriage) and not self.manager_busy:
             self.last_backlog_sha = backlog_sha
             self.intake()
         self.flush_housekeeping()
+        self.dispatch_deferred()
         self.dispatch_ready()
         self.dispatch_reviews()
         self.dispatch_landing()
@@ -1901,6 +2031,8 @@ class Orchestrator:
             or self.qa_pending_tip
             or self.consistency_due
             or self.housekeeping
+            or self.retriage
+            or self.deferred_runs
         ):
             return False
         open_items = [it for it in self.items.values() if it.stage not in ("done", "blocked")]
@@ -1925,16 +2057,15 @@ class Orchestrator:
             self.write_ledger()
             (self.p.runs_dir / "sdt.pid").unlink(missing_ok=True)
             return 130
-        done = sum(1 for it in self.items.values() if it.stage == "done")
         blocked = [it.slug for it in self.items.values() if it.stage == "blocked"]
-        self.event("drained", f"{done} landed, {len(blocked)} blocked")
+        self.event("drained", f"{self.merges} landed, {len(blocked)} blocked")
         self.write_ledger()
         (self.p.runs_dir / "sdt.pid").unlink(missing_ok=True)
         print(
             json.dumps(
                 {
                     "message": "DRAINED",
-                    "landed": done,
+                    "landed": self.merges,
                     "blocked": blocked,
                     "qa_green_tip": self.qa_green_tip,
                     "board": str(self.p.board_dir / "dashboard.html"),
