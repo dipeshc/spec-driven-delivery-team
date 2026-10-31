@@ -282,11 +282,12 @@ returns in its result for the orchestrator to apply.
    `.delivery-team/`, explicit-path only.
 
 The project profile's "sanctioned direct-write paths" section names the exact
-paths for that repo: it scopes the housekeeping writes made straight to the
-main tree, not the two merge paths above, which this list already sanctions
-wherever the lane's own conditions are met. Every non-merge path is
-**explicit-path only** — `git add <path>`, never `git add -A`. Anyone else
-writing to the main tree is off the rails.
+paths for that repo: it scopes the owner's session's housekeeping writes
+(writer 4 above), not the two merge paths, which this list already sanctions
+wherever the lane's own conditions are met, and not the orchestrator's
+housekeeping (writer 3), which this charter sanctions and which needs no
+entry. Every non-merge path is **explicit-path only** — `git add <path>`,
+never `git add -A`. Anyone else writing to the main tree is off the rails.
 
 **Pushing is the owner's session's, alone.** The orchestrator never pushes, and
 no role pushes; the owner's session pushes the default branch after landings,
