@@ -78,9 +78,16 @@ num_of() {
   printf '%s' "$flat" | grep -o "\"\{0,1\}$1\"\{0,1\}[[:space:]]*:[[:space:]]*[0-9][0-9]*" \
     | head -1 | grep -o '[0-9][0-9]*$'
 }
+# String values may hold JSON's `\"` and `\\`, so a plain `[^"]*` capture would stop at
+# an escaped quote. Both escapes are swapped for control-character placeholders before
+# the capture and restored after it; the orchestrator writes every other character raw.
+ph_bs=$(printf '\001'); ph_q=$(printf '\002')
+esc_in() { sed 's/\\\\/'"$ph_bs"'/g; s/\\"/'"$ph_q"'/g'; }
+esc_out() { sed 's/'"$ph_bs"'/\\/g; s/'"$ph_q"'/"/g'; }
+
 str_of() {
-  printf '%s' "$flat" \
-    | sed -n "s/.*\"\{0,1\}$1\"\{0,1\}[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+  printf '%s' "$flat" | esc_in \
+    | sed -n "s/.*\"\{0,1\}$1\"\{0,1\}[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1 | esc_out
 }
 
 # ---- isolate the items ----
@@ -138,8 +145,8 @@ item_obj() {
     | grep "\"\{0,1\}stage\"\{0,1\}[[:space:]]*:[[:space:]]*\"$1\"" | head -1
 }
 ofield() {
-  printf '%s' "$1" \
-    | sed -n "s/.*\"\{0,1\}$2\"\{0,1\}[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+  printf '%s' "$1" | esc_in \
+    | sed -n "s/.*\"\{0,1\}$2\"\{0,1\}[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1 | esc_out
 }
 onum() {
   printf '%s' "$1" | grep -o "\"\{0,1\}$2\"\{0,1\}[[:space:]]*:[[:space:]]*[0-9][0-9]*" \

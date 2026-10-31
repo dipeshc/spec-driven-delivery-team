@@ -1050,6 +1050,10 @@ def render(project_dir: Path) -> list[str]:
 @pytest.mark.parametrize("twin", ["state.json", "state.js"])
 def test_counts_and_detail_come_from_items_not_their_history(sdt: ModuleType, tmp_path: Path, twin: str) -> None:
     orch = ledger_orchestrator(sdt, tmp_path)
+    note = 'engine error — the "model" flag was refused \\ done'
+    orch.items["P3-blocked"].note = note
+    grouped = orch.items["P2-in-review"]
+    grouped.slugs = ["P2-in-review", "P2-sibling"]
     orch.write_ledger()
     board = orch.p.board_dir
     if twin == "state.js":
@@ -1064,7 +1068,8 @@ def test_counts_and_detail_come_from_items_not_their_history(sdt: ModuleType, tm
     assert "impl:1 review:1 land:0 blocked:1" in lines[0]
     assert "P2-in-review" in lines[1]
     assert "blocked P3-blocked" in lines[1]
-    assert "needs [owner] input" in lines[1]
+    assert "P2 ×2" in lines[1]
+    assert note in lines[1]
 
 
 def test_merge_clerk_failed_retry_returns_to_the_clerk(sdt: ModuleType, orch: Any) -> None:

@@ -110,7 +110,7 @@ def git_ok(*args: str, cwd: Path) -> bool:
 
 def atomic_write(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -1329,7 +1329,7 @@ class Orchestrator:
             "events": self.events,
         }
         self.p.board_dir.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(state, indent=1)
+        text = json.dumps(state, indent=1, ensure_ascii=False)
         atomic_write(self.p.board_dir / "state.json", text)
         atomic_write(self.p.board_dir / "state.js", "window.TEAM_STATE = " + text + ";\n")
 
@@ -2665,7 +2665,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     if not state_path.is_file():
         print("no run state; nothing has run here yet")
         return 0
-    state = json.loads(state_path.read_text())
+    state = json.loads(state_path.read_text(encoding="utf-8"))
     age = now() - int(state.get("generatedAt", 0))
     print(f"run: {state['run'].get('label')}  updated {age}s ago" + ("  (stale)" if age > 90 else ""))
     print(f"tip: {str(state['repo'].get('tip', ''))[:8]}  ahead of origin: {state['repo'].get('aheadOfOrigin')}")
