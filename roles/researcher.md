@@ -66,5 +66,8 @@ not worth doing):
 ```
 
 The orchestrator writes and commits the files and retires the originating
-item either way — for `NO-ITEM`, in a commit carrying your `finding` and
-`why`; you write nothing to the main working tree.
+item — for `FILED`, once at least one of your files is written; for
+`NO-ITEM`, in a commit carrying your `finding` and `why`. You write nothing to
+the main working tree. A `FILED` whose every filename the orchestrator skips
+(the charter's message table names the ones it writes) files nothing, retires
+nothing, and is a failed run.

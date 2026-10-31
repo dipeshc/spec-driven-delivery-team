@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -904,6 +905,67 @@ def test_research_refiled_under_its_own_filename_survives_and_is_retriaged(
     (triage,) = orch.runs
     (sent,) = triage.payload["items"]
     assert sent["slug"] == slug and "Researched text." in sent["text"]
+
+
+def test_research_that_files_nothing_retires_nothing_and_is_redispatched_then_blocked(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slug = "P2-rough-ask"
+    orch, requests = triage_orchestrator(sdt, tmp_path, monkeypatch, [slug])
+    path = orch.p.backlog / f"{slug}.md"
+    fresh = {slug: sdt.BacklogItem(slug, path, "P2", path.read_text())}
+    orch.apply_triage({"items": [{"slug": slug, "action": "research", "reason": "q"}]}, fresh)
+    # A path, not a name: the filing check skips it, so the run files nothing.
+    filed = {"message": "FILED", "items": [{"filename": "docs/backlog/P2-sharpened.md", "body": "# Sharpened\n"}]}
+    for attempt in range(1, orch.cfg.adopt_attempts + 1):
+        (research,) = orch.runs
+        orch.runs.remove(research)
+        orch.on_researcher(research, sdt.RunResult(True, payload=filed))
+        assert path.read_text() == f"# {slug}\n", "a FILED that filed nothing retired the rough ask"
+        assert len(requests) == 1 + attempt and requests[-1] == requests[0], "the failed research was not re-sent"
+    (research,) = orch.runs
+    orch.runs.remove(research)
+    orch.on_researcher(research, sdt.RunResult(True, payload=filed))
+    assert not orch.runs and orch.items[slug].stage == "blocked"
+    parked = orch.p.backlog / "blocked" / f"{slug}.md"
+    assert parked.read_text().startswith(f"# {slug}\n") and "'docs/backlog/P2-sharpened.md'" in parked.read_text()
+    subjects = sdt.git("log", "--no-show-signature", "--format=%s", cwd=orch.p.root).splitlines()
+    assert not any(s.startswith("chore(backlog): retire") for s in subjects)
+
+
+def test_filed_item_names_never_escape_the_backlog_or_end_the_run(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = make_project(sdt, tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("the owner's\n")
+    project.backlog.mkdir(parents=True)
+    (project.backlog / "P2-link.md").symlink_to(outside)
+    for method in ("write_text", "mkdir"):
+        real = getattr(Path, method)
+
+        def confined(self: Path, *args: Any, _real: Callable[..., Any] = real, **kwargs: Any) -> Any:
+            assert Path(os.path.abspath(self)).is_relative_to(tmp_path), f"{self} is outside the test's tmp dir"
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, method, confined)
+    normalised = {"/P2-lead.md": "P2-lead.md", "//P2-twice.md": "P2-twice.md", "/blocked/P2-up.md": "blocked/P2-up.md"}
+    refused = [
+        "P2-\0nul.md",
+        "P2-\ud800.md",
+        "P2-" + "x" * 300 + ".md",
+        "../P2-out.md",
+        "blocked/../../P2-out.md",
+        "xblocked/P2-x.md",
+        "docs/backlog/P2-path.md",
+        "P2-link.md",
+    ]
+    items = [{"filename": name, "body": "# item"} for name in [*normalised, *refused]]
+    assert project.file_items(items, "test") == list(normalised.values())
+    assert capsys.readouterr().out.count("skipping item with bad filename") == len(refused)
+    assert outside.read_text() == "the owner's\n", "a symlinked item file wrote through to its target"
+    tracked = sdt.git("ls-files", "--", str(project.backlog), cwd=project.root).splitlines()
+    assert sorted(tracked) == sorted(f"docs/backlog/{name}" for name in normalised.values())
 
 
 def test_review_batches_run_concurrently_up_to_reviewers(sdt: ModuleType, orch: Any) -> None:

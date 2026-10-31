@@ -107,9 +107,10 @@ fenced ```json block holding an object whose `message` key names a payload
 from the [message table](#message-schemas--the-canonical-payload-table). The
 orchestrator parses the last such block and nothing else; a run with no block,
 an unparsable block, or an engine failure is a failed run, never read as a
-verdict. A failed run's reason quotes the engine's own error line from the run
-log (the first error-shaped line, else the last non-empty one), so a blocked
-item explains itself. Every failed run follows one policy: the orchestrator
+verdict, and so is a Researcher `FILED` that files no item. A failed run's
+reason quotes the engine's own error line from the run log (the first
+error-shaped line, else the last non-empty one), so a blocked item explains
+itself. Every failed run follows one policy: the orchestrator
 re-dispatches it, up to `adopt_attempts` times per item (per tip for QA and the
 consistency check), then escalates. A Developer, Reviewer or Merge-Clerk
 failure escalates to the Manager as a `DECISION-REQUEST` (`DEVELOPER-FAILED`,
@@ -602,7 +603,9 @@ conforms to one of these shapes. The reviewer/merge-clerk split (review
 decoupled from landing) means an APPROVED verdict, a LANDABLE finding and the
 orchestrator's landing are distinct steps by distinct parties. Items a role
 wants filed travel as `items: [{filename, body}]` and are written and committed
-by the orchestrator; any message may carry `notes_for_next_run`.
+by the orchestrator. A `filename` names a `.md` file directly in the backlog
+dir or its `blocked/` (a leading `/` is dropped); the orchestrator skips any
+other name rather than write it. Any message may carry `notes_for_next_run`.
 
 | From → To | Message | Payload |
 |---|---|---|
