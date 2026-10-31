@@ -694,6 +694,16 @@ class RoleRun:
         return RunResult(True, payload=payload, log_path=self.log_path, seconds=seconds)
 
 
+def retry_due(attempts: dict[str, int], key: str, limit: int) -> bool:
+    """Count a failed run against `key`: True while it earns a re-dispatch, False once it must escalate.
+
+    The one bound every failed role run follows, in `sdt run` and `sdt sweep`
+    alike: `limit` is the configured `adopt_attempts`.
+    """
+    attempts[key] = attempts.get(key, 0) + 1
+    return attempts[key] <= limit
+
+
 # ---------------------------------------------------------------- the full gate
 
 
@@ -1544,9 +1554,7 @@ class Orchestrator:
             self.block(item, f"triage failed after {attempts} attempt(s): {error}")
 
     def retry_due(self, attempts: dict[str, int], key: str) -> bool:
-        """Count a failed run against `key`: True while it earns a re-dispatch, False once it must escalate."""
-        attempts[key] = attempts.get(key, 0) + 1
-        return attempts[key] <= self.cfg.adopt_attempts
+        return retry_due(attempts, key, self.cfg.adopt_attempts)
 
     # -- dispatch
 
@@ -2240,6 +2248,185 @@ class Orchestrator:
         return 0
 
 
+# ---------------------------------------------------------------- sweep
+
+# The consistency-check role's phase 1 hunts, in its order; phase 2 joins them
+# as one class when the profile says docs are spec.
+SWEEP_CLASSES = ("contradictions", "terminology", "references", "decision-records", "self-contradiction", "residue")
+SPEC_VS_CODE = "spec-vs-code"
+
+
+def unique_filenames(items: list[dict[str, Any]], taken: set[str]) -> list[dict[str, Any]]:
+    """Suffix `-<n>` onto each item file name already in `taken`, so filing never overwrites an item."""
+    out: list[dict[str, Any]] = []
+    for item in items:
+        path = Path(str(item.get("filename", "")))
+        if path.suffix != ".md":
+            out.append(item)
+            continue
+        candidate, n = path, 2
+        while candidate.name in taken:
+            candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+            n += 1
+        taken.add(candidate.name)
+        out.append({**item, "filename": str(candidate)})
+    return out
+
+
+class Sweep:
+    """`sdt sweep`: the whole-spec audit, every step one consistency-check run.
+
+    A `map` run takes the file inventory; an `audit` run per finding class and
+    a skeptic `verify` run per finding share one pool bounded by
+    `max_parallel_developers`, so a finding is verified as soon as a slot frees
+    rather than after every class has returned. A failed step is re-dispatched
+    and escalated as every failed role run is (`retry_due`): reported under
+    `failed`, or for the map, ending the sweep. The confirmed findings are
+    filed in one commit.
+    """
+
+    def __init__(self, project: Project, *, engine: str | None) -> None:
+        self.p = project
+        self.engine = engine
+        self.tip = project.tip()
+        self.slots = [f"sweep-{n}" for n in range(1, max(1, project.cfg.max_parallel_developers) + 1)]
+        self.queue: list[tuple[str, dict[str, Any]]] = []
+        self.inventory: dict[str, Any] = {}
+        self.confirmed: list[dict[str, Any]] = []
+        self.refuted: list[dict[str, str]] = []
+        self.failed: list[dict[str, Any]] = []
+        # Failed runs per step, keyed by the step's tag, which its re-dispatch keeps.
+        self.attempts: dict[str, int] = {}
+        self.verifies = 0
+
+    def payload(self, phase: str) -> dict[str, Any]:
+        return {"message": "RUN-CONSISTENCY", "tip": self.tip, "phase": phase}
+
+    def drain(self) -> None:
+        """Run every queued step, one per free slot, until the queue and the pool are empty."""
+        free = list(self.slots)
+        live: list[tuple[str, RoleRun]] = []
+        try:
+            while self.queue or live:
+                while self.queue and free:
+                    tag, payload = self.queue.pop(0)
+                    slot = free.pop(0)
+                    wt = self.p.ensure_detached_worktree(slot)
+                    self.p.reset_detached(wt, self.tip)
+                    run = self.p.start_run("consistency-check", payload, cwd=wt, engine=self.engine, tag=tag)
+                    live.append((slot, run))
+                time.sleep(self.p.cfg.poll_seconds)
+                for slot, run in list(live):
+                    if not run.poll():
+                        continue
+                    live.remove((slot, run))
+                    free.append(slot)
+                    res = run.result()
+                    log(
+                        f"done {run.role.name} ({run.id}) after {res.seconds}s: {res.payload.get('message') if res.ok else res.error}"
+                    )
+                    self.on_done(run, res)
+        except BaseException:
+            # Engine runs live in their own session, so an interrupt never reaches them.
+            for _, run in live:
+                run.kill("interrupted")
+            raise
+
+    def on_done(self, run: RoleRun, res: RunResult) -> None:
+        phase = run.payload["phase"]
+        error = res.error if not res.ok else self.malformed(phase, res.payload)
+        if error:
+            self.on_failed(run, res, error)
+            return
+        if phase == "map":
+            self.inventory = res.payload
+            return
+        if phase == "audit":
+            for item in [i for i in res.payload["items"] if isinstance(i, dict)]:
+                self.verifies += 1
+                payload = {**self.payload("verify"), "class": run.payload["class"], "finding": item}
+                self.queue.append((f"sweep-verify-{self.verifies}", payload))
+            return
+        if res.payload["verdict"] == "confirmed":
+            self.confirmed.append(run.payload["finding"])
+            return
+        self.refuted.append({**self.step(run), "reason": str(res.payload.get("reason", ""))})
+
+    @staticmethod
+    def malformed(phase: str, result: dict[str, Any]) -> str:
+        """Why a step's result is not the payload its phase returns; empty when it is."""
+        message = result.get("message")
+        if phase == "audit":
+            if message == "FINDINGS" and isinstance(result.get("items"), list):
+                return ""
+            return f"expected FINDINGS with items, got {message!r}"
+        if phase == "verify":
+            verdict = result.get("verdict")
+            if message == "VERDICT" and verdict in ("confirmed", "refuted"):
+                return ""
+            return f"expected a confirmed or refuted VERDICT, got {message!r} {verdict!r}"
+        if message != "INVENTORY":
+            return f"expected INVENTORY, got {message!r}"
+        if not isinstance(result.get("applicable"), bool):
+            return "INVENTORY has no boolean `applicable`"
+        files = result.get("files")
+        if result["applicable"] and (
+            not isinstance(result.get("docs_are_spec"), bool)
+            or not isinstance(files, list)
+            or not files
+            or not all(isinstance(f, str) for f in files)
+        ):
+            return "INVENTORY has no `docs_are_spec` or `files` inventory"
+        return ""
+
+    def on_failed(self, run: RoleRun, res: RunResult, error: str) -> None:
+        """A failed step follows every failed run's bound: re-dispatch up to `adopt_attempts`, then report it."""
+        if retry_due(self.attempts, run.tag, self.p.cfg.adopt_attempts):
+            log(f"error: sweep step {run.tag} failed ({error}); re-dispatching")
+            self.queue.append((run.tag, run.payload))
+            return
+        attempts = self.attempts[run.tag]
+        if run.payload["phase"] == "map":
+            raise SdtError(f"sweep map run failed after {attempts} attempt(s): {error}; log {res.log_path}")
+        log(f"sweep-failed: {run.tag} failed after {attempts} attempt(s): {error}")
+        self.failed.append({**self.step(run), "error": error, "attempts": attempts, "log": str(res.log_path)})
+
+    @staticmethod
+    def step(run: RoleRun) -> dict[str, str]:
+        """The phase, class and (for a verify) finding file name a step's report names it by."""
+        step = {"phase": str(run.payload["phase"]), "class": str(run.payload["class"])}
+        if isinstance(run.payload.get("finding"), dict):
+            step["filename"] = str(run.payload["finding"].get("filename", ""))
+        return step
+
+    def run(self) -> dict[str, Any]:
+        self.queue.append(("sweep-map", self.payload("map")))
+        self.drain()
+        inv = self.inventory
+        if not inv["applicable"]:
+            return {"message": "SWEEP", "tip": self.tip, "applicable": False, "reason": inv.get("reason", "")}
+        classes = [*SWEEP_CLASSES, *([SPEC_VS_CODE] if inv["docs_are_spec"] else [])]
+        log(
+            f"sweep: {len(inv['files'])} file(s), {len(classes)} class(es), {len(self.slots)} slot(s) at {self.tip[:8]}"
+        )
+        for cls in classes:
+            self.queue.append((f"sweep-audit-{cls}", {**self.payload("audit"), "class": cls, "files": inv["files"]}))
+        self.drain()
+        filed: list[str] = []
+        if self.confirmed:
+            taken = {path.name for path in self.p.backlog.rglob("*.md")} if self.p.backlog.is_dir() else set()
+            filed = self.p.file_items(unique_filenames(self.confirmed, taken), "consistency sweep")
+        return {
+            "message": "SWEEP",
+            "tip": self.tip,
+            "applicable": True,
+            "classes": classes,
+            "filed": filed,
+            "refuted": self.refuted,
+            "failed": self.failed,
+        }
+
+
 # ---------------------------------------------------------------- doctor
 
 
@@ -2527,6 +2714,18 @@ def cmd_role(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sweep(args: argparse.Namespace) -> int:
+    project = Project(Path.cwd(), [Path(d) for d in args.adapter_dir])
+    sweep = Sweep(project, engine=args.engine)
+    try:
+        result = sweep.run()
+    except KeyboardInterrupt:
+        log("sweep interrupted; running audits stopped, nothing filed")
+        return 130
+    print(json.dumps(result))
+    return 1 if result.get("failed") else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="sdt", description=__doc__.split("\n\n")[1] if __doc__ else "")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -2570,6 +2769,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cwd", help="working directory; default is a scratch worktree at the default branch")
     p.add_argument("--file-items", action="store_true", help="file any `items` the result carries as backlog items")
     p.set_defaults(fn=cmd_role)
+    p = sub.add_parser("sweep", help="audit the whole spec in parallel and file what a skeptic confirms")
+    common(p)
+    p.set_defaults(fn=cmd_sweep)
 
     args = ap.parse_args(argv)
     try:

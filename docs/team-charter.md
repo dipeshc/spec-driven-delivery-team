@@ -118,8 +118,13 @@ fall back on — triage, a Manager decision, QA, the Researcher, the consistency
 check — leaves a visible outcome instead: the affected items are blocked with
 the engine error as the ⛔ reason; the QA gate state stays red with the error
 and the next red with the same failures goes to QA again; a consistency check
-records a failure event, with the error, in the run's events. A failed triage
-dispatches nothing. Text before the block is for the log.
+records a failure event, with the error, in the run's events. `sdt sweep`
+bounds each of its steps the same way — per step: the map, a class's audit, a
+finding's verify, a step whose result is not its phase's payload counting as
+failed — and reports a step whose attempts are spent under `failed` in its
+result, with the error, exiting non-zero; a map that keeps failing ends the
+sweep with nothing filed. A failed triage dispatches nothing. Text before the
+block is for the log.
 
 **Capability tiers.** Each role file declares its `tier`: `frontier` for the
 judgment roles (Manager, Reviewer, Merge-Clerk, QA, Researcher, consistency
@@ -458,9 +463,11 @@ copy-pasteable rather than placeholder-laced:
   before every run: `reviewer-<n>` (one per `[limits] reviewers` instance),
   `merge-clerk`, `qa` (the full gate and the QA role), `consistency-check`,
   `manager-<n>` and `researcher-<n>`; an ad-hoc `sdt role <name>` run defaults
-  to `scratch-<name>`. `sdt run` gives each concurrent run of a role its own
-  `<n>` tree and never resets a tree a live run works in. The Manager,
-  Researcher and consistency check start at the current default-branch tip.
+  to `scratch-<name>`, and `sdt sweep` runs its steps in `sweep-<n>` (one per
+  `max_parallel_developers` slot). `sdt run` gives each concurrent run of a
+  role its own `<n>` tree and never resets a tree a live run works in. The
+  Manager, Researcher and consistency check start at the current
+  default-branch tip.
 - **Landing:** fast-forward only, one commit per item, linear history.
 
 A project may override the directory and the branch prefix in its
@@ -611,8 +618,8 @@ by the orchestrator; any message may carry `notes_for_next_run`.
 | Merge-Clerk → Orchestrator | `MERGE-BLOCKED` / `REBASE-REQUIRED` | `{reason}` (surfaced immediately) / `{items[], branch, base, reason}` (the clerk's rebase hit real conflicts) |
 | Orchestrator → QA | `REGRESSION-REQUEST` | `{tip, failed_commands[], log_path, log_tail, last_green_tip}` — sent only on a **new** full-gate failure; the orchestrator runs the gate itself on every new tip — each sha it lands and each tip landed outside the run (the direct lane), skipping only a tip whose new commits are all its own housekeeping — and filters the known-failures file failure by failure: a failing command is filtered only when every failure line in its output holds a known pattern, and one with no failure line or killed by a signal is always new |
 | QA → Orchestrator | `REGRESSION` / `ENVIRONMENT` / `QA-BLOCKED` | `{items[{filename, body}], first_bad_sha, test}` / `{patterns[], reason}` (the orchestrator appends the patterns to the known-failures file) / `{reason}` (shown in the QA gate state until the next gate run) |
-| Orchestrator → consistency check | `RUN-CONSISTENCY` | `{tip}` (trigger only; the pass's scope and audit range are the role's own) |
-| consistency check → Orchestrator | `FINDINGS` | `{items[{filename, body}]}` |
+| Orchestrator → consistency check | `RUN-CONSISTENCY` | `{tip, phase?}` — with no `phase`, a trigger only (the pass's scope and audit range are the role's own); `sdt sweep` sends `phase: map`, `audit {class, files[]}` or `verify {class, finding}` (the role's Sweep phases) |
+| consistency check → Orchestrator | `FINDINGS` / `INVENTORY` / `VERDICT` | `{items[{filename, body}]}` (the incremental pass, or an `audit` step) / `{applicable, reason, docs_are_spec, files[]}` (`map`) / `{verdict: confirmed \| refuted, reason}` (`verify`) |
 | Orchestrator → Researcher | `RESEARCH-REQUEST` | `{item, question, item_text}` |
 | Researcher → Orchestrator | `FILED` / `NO-ITEM` | `{items[{filename, body}], confidence, open_questions[]}` / `{finding, why}` |
 | Owner's session → exploration | `EXPLORATION-REQUEST` | `{themes[], constraints[]}` (via `sdt role exploration`) |

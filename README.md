@@ -21,7 +21,8 @@ everything else follows from it:
   a missing spec edit is a review defect, exactly like a missing test.
 - The spec is **audited**: the `consistency-check` role checks the docs
   against themselves, then the code against the docs, filing every confirmed
-  delta as a backlog item.
+  delta as a backlog item. `sdt sweep` audits the whole spec in parallel and
+  puts every finding to a skeptic before it is filed.
 
 The backlog itself follows the same principle — one file per item, priority in
 the filename, deleted by the commit that lands the work. All work state lives
@@ -129,10 +130,9 @@ runs its own process on itself, backlog and all:
   [`docs/profile.template.md`](docs/profile.template.md) — the per-project
   configuration: machine-read and prose halves.
 
-Claude Code extras: `/delivery-team:statusline` installs a two-line terminal
+Claude Code extra: `/delivery-team:statusline` installs a two-line terminal
 statusline for team runs (it chains onto any statusline you already have and
-stays silent outside team projects), and `/delivery-team:consistency-sweep`
-runs the spec audit as a parallel workflow.
+stays silent outside team projects).
 
 ## License
 

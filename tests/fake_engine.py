@@ -23,6 +23,13 @@ asks for. Behaviour is keyed on item slugs so a test can stage every path:
 
 With ``FAKE_REVIEW_WAIT_SECONDS`` set, the first reviewer run waits up to that
 long for a second one to start, so a run with two reviewer instances overlaps.
+
+The consistency check answers each `sdt sweep` phase: the map reads the profile
+for applicability and docs-as-spec; every audited class returns one finding,
+which the skeptic refutes for the classes in ``REFUTED_CLASSES``; the classes in
+``ROT_CLASSES`` also each return a ``P3-doc-rot.md``. The audit of a class in
+``FLAKY_CLASSES`` fails its first run, and with ``FAKE_SWEEP_FAILS`` naming a
+class, every audit of that class fails.
 """
 
 from __future__ import annotations
@@ -34,6 +41,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+REFUTED_CLASSES = {"terminology", "residue"}
+ROT_CLASSES = {"references", "self-contradiction"}
+FLAKY_CLASSES = {"decision-records"}
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -106,12 +117,7 @@ def main() -> int:
     if role == "qa":
         return qa(payload, cwd)
     if role == "consistency-check":
-        if any("consistency-fails" in p.name for p in (cwd / "src").glob("*.txt")):
-            return fail()
-        reply(
-            {"message": "FINDINGS", "items": [], "received": payload, "notes_for_next_run": "audited up to stub-marker"}
-        )
-        return 0
+        return consistency_check(payload, prompt, cwd)
     if role == "researcher":
         slug = payload.get("item", "x")
         if "research-fails" in slug:
@@ -133,6 +139,44 @@ def main() -> int:
         )
         return 0
     reply({"message": "UNKNOWN-ROLE", "role": role})
+    return 0
+
+
+def consistency_check(payload: dict, prompt: str, cwd: Path) -> int:
+    phase = payload.get("phase")
+    if phase is None:
+        if any("consistency-fails" in p.name for p in (cwd / "src").glob("*.txt")):
+            return fail()
+        reply(
+            {"message": "FINDINGS", "items": [], "received": payload, "notes_for_next_run": "audited up to stub-marker"}
+        )
+        return 0
+    if phase == "map":
+        profile_match = re.search(r"^- profile: (.+)$", prompt, re.MULTILINE)
+        profile = Path(profile_match.group(1)).read_text() if profile_match else ""
+        reply(
+            {
+                "message": "INVENTORY",
+                "applicable": "Docs root: n/a" not in profile,
+                "reason": "stub",
+                "docs_are_spec": "Docs are spec: yes" in profile,
+                "files": ["docs/spec.md"],
+            }
+        )
+        return 0
+    if phase == "audit":
+        cls = payload["class"]
+        if cls == os.environ.get("FAKE_SWEEP_FAILS") or (cls in FLAKY_CLASSES and counter("sweep-" + cls) == 0):
+            return fail()
+        verdict = "refute" if cls in REFUTED_CLASSES else "confirm"
+        files = ", ".join(payload["files"])
+        items = [{"filename": f"P2-sweep-{cls}.md", "body": f"# {cls} finding\n\nIn {files}.\n\nverdict: {verdict}\n"}]
+        if cls in ROT_CLASSES:
+            items.append({"filename": "P3-doc-rot.md", "body": f"# Doc rot found by {cls}\n\nverdict: confirm\n"})
+        reply({"message": "FINDINGS", "items": items})
+        return 0
+    refuted = "verdict: refute" in payload["finding"]["body"]
+    reply({"message": "VERDICT", "verdict": "refuted" if refuted else "confirmed", "reason": "stub"})
     return 0
 
 

@@ -11,10 +11,10 @@ A harness-agnostic framework implementing an autonomous, docs-driven software
 delivery team. Its "code" is the orchestrator under `bin/`, the role prompts
 under `roles/`, the engine adapters under `adapters/`, the skills under
 `skills/` that let any coding harness drive it, and the tests under `tests/`.
-It is also a Claude Code plugin (the manifest under `.claude-plugin/`); surfaces
-that only Claude Code can host — the terminal statusline and the parallel
-consistency-sweep workflow — live under `extras/claude/`, which the manifest
-adds to the plugin's skill and workflow scans; nothing else depends on them.
+It is also a Claude Code plugin (the manifest under `.claude-plugin/`); the
+surface that only Claude Code can host — the terminal statusline — lives under
+`extras/claude/`, which the manifest adds to the plugin's skill scan; nothing
+else depends on it.
 Its spec is the documents under `docs/`.
 
 ## Document roles
@@ -40,7 +40,7 @@ Its spec is the documents under `docs/`.
 | `roles/merge-clerk.md` | Judges landability: rebases a trivially-behind branch by cherry-pick + range-diff, re-verifies, checks the commit object, and reports the sha as LANDABLE. The orchestrator performs the fast-forward. |
 | `roles/qa.md` | Root-causes a new full-gate failure on a landed tip and returns the regression item to file. Never fixes anything. The gate itself is run by the orchestrator. |
 | `roles/researcher.md` | Turns an item that needs investigation into actionable item(s), returned for filing. |
-| `roles/consistency-check.md` | The two-phase spec audit: spec-vs-spec, then spec-vs-code. Returns findings as items; fixes nothing. Run on the QA cadence and on demand through the skill. |
+| `roles/consistency-check.md` | The two-phase spec audit: spec-vs-spec, then spec-vs-code. Returns findings as items; fixes nothing. Run on the QA cadence and on demand through the skill. `sdt sweep` runs it as the whole-spec audit, one step per run: a `map` run for the file inventory, an `audit` run per finding class in parallel (bounded by `max_parallel_developers`), a skeptic `verify` run per finding, then the confirmed findings filed in one commit; a failed step is re-dispatched and escalated as every failed run is. |
 | `roles/exploration.md` | Owner-run specialist for feature-spike waves, outside the pipeline. |
 | `roles/ui-inspector.md` | Owner-run specialist for visual QA of a project's rendered UI; needs a vision-capable engine. |
 | `skills/team/SKILL.md` | How a harness session runs a delivery: lane routing, the direct lane done in-session, the team lane via `sdt run`, status via `sdt status`, filing items. |
@@ -50,7 +50,6 @@ Its spec is the documents under `docs/`.
 | `extras/claude/skills/statusline/SKILL.md` | Claude-only: installs, updates, or removes the terminal statusline, chaining onto any existing statusline rather than clobbering it. |
 | `assets/dashboard.html` | The zero-runtime progress board: a self-contained browser page copied beside the orchestrator's `state.js` and opened over `file://`. Live-polls the state ledger and renders the pipeline board, agent rail, and event feed. A renderer, never a source of truth. |
 | `extras/claude/skills/statusline/statusline.sh` | Claude-only, zero-runtime: a pure-POSIX-shell script that reads Claude Code's statusline stdin JSON, finds the project's state ledger, and prints up to two glanceable lines. A renderer, never a source of truth. |
-| `extras/claude/workflows/consistency-sweep.js` | Claude-only: the whole-spec audit as a parallel workflow — a finding class per agent, each finding put to an independent skeptic, survivors filed in one serialized step. Invoked as `/delivery-team:consistency-sweep`. |
 | `tests/` | The orchestrator's unit tests and an end-to-end run on a scripted stub engine (`tests/fake_engine.py`, adapter `tests/adapters/fake.toml`) that exercises every pipeline path without a model. |
 
 ## Invariants

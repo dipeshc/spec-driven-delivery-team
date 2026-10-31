@@ -25,8 +25,7 @@ repository.
   - `skills/` — the skills, one directory per skill.
   - `assets/` — the progress board page (`dashboard.html`).
   - `tests/` — the orchestrator's tests and the stub engine.
-  - `extras/claude/` — Claude-only surfaces: the statusline skill and script,
-    and `workflows/consistency-sweep.js`, the parallel spec audit.
+  - `extras/claude/` — Claude-only surfaces: the statusline skill and script.
   - `docs/` — the spec: `architecture.md` (entry doc), `team-charter.md`,
     `profile.template.md`, `config.template.toml`, and `backlog/`.
 
@@ -39,13 +38,11 @@ repository.
   role (spec-vs-spec, then spec-vs-code over the role, skill and adapter
   files) is this repo's audit of them. No adapter is exercised against a real
   engine by the gate: the end-to-end test runs on the stub engine only.
-  Two executable files are also outside the gate (the statusline script is
-  covered by a test in `tests/test_units.py`); the reviewer verifies them
+  One executable file is also outside the gate (the statusline script is
+  covered by a test in `tests/test_units.py`); the reviewer verifies it
   instead:
   - `assets/dashboard.html` — the board page's JavaScript; open it on a
     ledger and check it renders.
-  - `extras/claude/workflows/consistency-sweep.js` — the sweep workflow,
-    while it exists; read it against the consistency-check role.
 - **Notes:** every relative link and every path a file names must resolve to
   a file that exists in the repo.
 

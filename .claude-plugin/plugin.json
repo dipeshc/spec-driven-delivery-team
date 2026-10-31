@@ -11,9 +11,6 @@
   "skills": [
     "./extras/claude/skills/"
   ],
-  "workflows": [
-    "./extras/claude/workflows/"
-  ],
   "keywords": [
     "agents",
     "multi-agent",

@@ -307,6 +307,93 @@ def test_researcher_role_sends_research_request(repo: Path) -> None:
     assert result["received"]["message"] == "RESEARCH-REQUEST"
 
 
+def set_profile(repo: Path, text: str) -> str:
+    """Commit a new profile; returns the resulting tip."""
+    (repo / ".delivery-team" / "profile.md").write_text(text)
+    git("commit", "-q", "-am", "docs: profile", cwd=repo)
+    return git("rev-parse", "HEAD", cwd=repo)
+
+
+def sweep_prompts(repo: Path, step: str) -> list[Path]:
+    return sorted((repo / ".delivery-team" / "runs").glob(f"*-consistency-check-sweep-{step}*.prompt.md"))
+
+
+def test_sweep_files_confirmed_findings_only(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P3-doc-rot"])
+    backlog = repo / "docs" / "backlog"
+    existing = (backlog / "P3-doc-rot.md").read_text()
+    seed = set_profile(repo, "# Profile\n\nDocs are spec: yes.\n")
+    proc = run_sdt(repo, "sweep")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["message"] == "SWEEP" and result["applicable"] and result["failed"] == []
+    assert result["classes"] == [
+        "contradictions",
+        "terminology",
+        "references",
+        "decision-records",
+        "self-contradiction",
+        "residue",
+        "spec-vs-code",
+    ]
+
+    # a map run, an audit per class, a skeptic per finding
+    assert len(sweep_prompts(repo, "map")) == 1
+    audits = sweep_prompts(repo, "audit-")
+    assert all('"phase": "audit"' in p.read_text() and '"docs/spec.md"' in p.read_text() for p in audits)
+    assert len(sweep_prompts(repo, "verify-")) == 9
+
+    # the flaky audit failed once and was re-dispatched; its finding is filed below
+    assert len(audits) == 8 and len(sweep_prompts(repo, "audit-decision-records")) == 2
+    assert "sweep step sweep-audit-decision-records failed (no fenced json block" in proc.stdout
+
+    # the confirmed are filed, the refuted are not, and nothing is overwritten
+    confirmed = {f"P2-sweep-{c}.md" for c in ("contradictions", "references", "decision-records", "self-contradiction")}
+    confirmed |= {"P2-sweep-spec-vs-code.md", "P3-doc-rot-2.md", "P3-doc-rot-3.md"}
+    assert set(result["filed"]) == confirmed
+    assert {r["filename"] for r in result["refuted"]} == {"P2-sweep-terminology.md", "P2-sweep-residue.md"}
+    assert {p.name for p in backlog.glob("*.md")} == confirmed | {"P3-doc-rot.md"}
+    assert (backlog / "P3-doc-rot.md").read_text() == existing
+    assert (backlog / "P3-doc-rot-2.md").read_text() != (backlog / "P3-doc-rot-3.md").read_text()
+
+    # in one commit, leaving the main tree clean
+    assert git("rev-list", "--count", f"{seed}..main", cwd=repo) == "1"
+    subject = git("log", "--no-show-signature", "-1", "--format=%s", cwd=repo)
+    assert subject == "chore(backlog): file 7 item(s) — consistency sweep"
+    assert git("status", "--porcelain", cwd=repo) == ""
+
+
+def test_sweep_reports_a_step_that_keeps_failing(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, [])  # docs are not spec: no spec-vs-code class
+    seed = git("rev-parse", "main", cwd=repo)
+    proc = run_sdt(repo, "sweep", env_extra={"FAKE_SWEEP_FAILS": "references"})
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    # adopt_attempts = 1: the audit is re-dispatched once, then reported, never retried forever
+    assert len(sweep_prompts(repo, "audit-references")) == 2
+    [failed] = result["failed"]
+    assert failed["phase"] == "audit" and failed["class"] == "references" and failed["attempts"] == 2
+    assert failed["error"].startswith("no fenced json block"), failed
+    assert "sweep-failed: sweep-audit-references failed after 2 attempt(s)" in proc.stdout
+
+    # every other class's confirmed finding is still filed, in one commit
+    confirmed = {f"P2-sweep-{c}.md" for c in ("contradictions", "decision-records", "self-contradiction")}
+    assert set(result["filed"]) == confirmed | {"P3-doc-rot.md"}
+    assert git("rev-list", "--count", f"{seed}..main", cwd=repo) == "1"
+
+
+def test_sweep_stops_where_the_audit_does_not_apply(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, [])
+    seed = set_profile(repo, "# Profile\n\nDocs root: n/a\n")
+    proc = run_sdt(repo, "sweep")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["message"] == "SWEEP" and result["applicable"] is False
+    assert sweep_prompts(repo, "audit-") == []
+    assert git("rev-parse", "main", cwd=repo) == seed
+
+
 def test_status_without_run(repo: Path) -> None:
     proc = run_sdt(repo, "status")
     assert proc.returncode == 0

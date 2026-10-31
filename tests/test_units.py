@@ -790,6 +790,18 @@ def test_failed_run_redispatch_waits_for_a_held_tree(sdt: ModuleType, orch: Any)
     assert retry.cwd == qa and retry.payload is failed.payload and orch.deferred_runs == []
 
 
+def test_sweep_map_that_keeps_failing_ends_the_sweep(sdt: ModuleType, tmp_path: Path) -> None:
+    project = make_project(sdt, tmp_path, "[limits.liveness]\nadopt_attempts = 1\n")
+    sweep = sdt.Sweep(project, engine=None)
+    run = SimpleNamespace(tag="sweep-map", payload=sweep.payload("map"))
+    # A result of the wrong shape is a failed run, as an engine failure is.
+    wrong = sdt.RunResult(ok=True, payload={"message": "FINDINGS", "items": []})
+    sweep.on_done(run, wrong)
+    assert sweep.queue == [("sweep-map", run.payload)] and sweep.attempts == {"sweep-map": 1}
+    with pytest.raises(sdt.SdtError, match=r"after 2 attempt\(s\): expected INVENTORY"):
+        sweep.on_done(run, wrong)
+
+
 def test_manager_starts_at_the_moved_tip(sdt: ModuleType, orch: Any) -> None:
     backlog = orch.p.backlog
     backlog.mkdir(parents=True)

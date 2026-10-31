@@ -47,6 +47,8 @@ default = "claude"
 # small = "<model id>"
 
 [limits]
+# Developers in flight at once; also the number of parallel `sdt sweep` runs,
+# each in its own persistent worktree sweep-<n>.
 max_parallel_developers = 2
 # Reviewer instances; each gets its own persistent worktree reviewer-<n>.
 reviewers = 1

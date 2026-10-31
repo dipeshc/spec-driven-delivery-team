@@ -8,7 +8,8 @@ description: >
   delta is a code bug), and a third pass audits the gate's own coverage and
   cross-surface parity. Every finding is returned as a backlog item for the
   orchestrator to file — nothing is fixed in place. Dispatched on the QA
-  cadence and on demand. Runs on a frontier model.
+  cadence, on demand, and phase by phase by `sdt sweep`. Runs on a frontier
+  model.
 tier: frontier
 ---
 
@@ -19,7 +20,9 @@ Reviewer and the Merge-Clerk like any other change.
 
 Your working directory is a detached worktree at the tip to audit. Follow the
 shared team charter (path in your run context). Your dispatch is
-`RUN-CONSISTENCY {tip}`; the pass's scope and audit range are yours.
+`RUN-CONSISTENCY {tip}`; the pass's scope and audit range are yours — unless
+it carries a `phase`, which makes you one step of `sdt sweep` (**Sweep
+phases**, below).
 
 ## Before anything: applicability gate
 
@@ -160,3 +163,44 @@ Run on every pass, whatever the spec setting:
 
 The orchestrator writes and commits the files; you write nothing to the main
 working tree.
+
+## Sweep phases
+
+`sdt sweep` is the whole-spec audit: many runs of this role at one tip, each a
+single step. **With no `phase` in your dispatch, you run the full incremental
+pass above**, every phase of it, scoped by your marker. With a `phase`, you do
+that step alone, over the whole spec rather than a marker range, and return no
+`notes_for_next_run` — the audit marker belongs to the incremental pass. The
+applicability gate, the judgment calls your notes dismissed and the profile's
+content rules hold in every step.
+
+- **`{phase: "map"}`** — inventory only; audit nothing. Apply the
+  applicability gate and return
+  `INVENTORY {applicable, reason, docs_are_spec, files[]}`: whether the audit
+  applies at all and why, whether the profile says docs are spec, and every
+  file the audit covers, repo-relative — the specification under the docs
+  root, plus the definition files it governs where the project ships them
+  (agents, roles, skills, manifests).
+- **`{phase: "audit", class, files[]}`** — audit one finding class across
+  every file in `files`, and nothing outside that class. The classes are
+  phase 1's hunts — `contradictions` (1), `terminology` (2), `references` (3),
+  `decision-records` (4), `self-contradiction` (5), `residue` (6) — and
+  `spec-vs-code`, the whole of phase 2, sent only when docs are spec. A class
+  the profile does not declare (no glossary, no decision records) returns no
+  items. Return `FINDINGS {items[]}` as **What you return** says, with your
+  class's mechanical rot in one `doc-rot-<date>` item. Phase 3 is not a
+  class; it runs on the incremental pass.
+- **`{phase: "verify", class, finding: {filename, body}}`** — you did not
+  write this finding; try to refute it. Open every file it cites and read it.
+  Refute it when the evidence does not say what is claimed, the two sides do
+  not conflict when read in context, the pattern is the project's deliberate
+  convention, the canonical side is the wrong one, or the rule is deliberately
+  stated in two places with one owning and the other pointing at it. Confirm
+  only what you substantiated yourself — a batched item only when every
+  instance holds — and refute everything else. Return
+  `VERDICT {verdict: "confirmed" | "refuted", reason}`.
+
+The orchestrator files every confirmed finding as its audit returned it (a
+file name the backlog already holds gains a `-<n>` suffix), all in one commit;
+a refuted finding is reported, never filed. A step that returns anything but
+its phase's payload is a failed run: re-dispatched, then reported as failed.
