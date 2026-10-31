@@ -1000,3 +1000,22 @@ def test_counts_and_detail_come_from_items_not_their_history(sdt: ModuleType, tm
     assert "P2-in-review" in lines[1]
     assert "blocked P3-blocked" in lines[1]
     assert "needs [owner] input" in lines[1]
+
+
+def test_merge_clerk_failed_retry_returns_to_the_clerk(sdt: ModuleType, orch: Any) -> None:
+    it = review_item(sdt, orch, "P2-a")
+    it.head = "abc"
+    it.enter("landing")
+    orch.cfg.adopt_attempts = 0
+    clerk = SimpleNamespace(tag="P2-a", payload={})
+    orch.on_merge_clerk(clerk, sdt.RunResult(ok=False, error="timeout"))
+    (ask,) = orch.started
+    assert ask.role.name == "manager" and ask.payload["event"] == "MERGE-CLERK-FAILED"
+    orch.runs.remove(ask)
+    orch.manager_busy = False
+    decision = sdt.RunResult(True, payload={"action": "retry", "reason": "transient"})
+    orch.on_manager(ask, decision)
+    assert it.stage == "landing" and not it.pending
+    assert (it.head, it.branch) == ("abc", "item/P2-a")
+    orch.dispatch_landing()
+    assert [r.role.name for r in orch.started] == ["manager", "merge-clerk"]

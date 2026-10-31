@@ -1691,10 +1691,14 @@ class Orchestrator:
             reason = str(res.payload.get("reason", ""))
         else:
             reason = f"decision failed after {it.failures['manager']} attempt(s): {res.error}"
-        if action in ("retry", "adopt") and run.payload.get("event") == "REVIEWER-FAILED":
-            # A reviewer failure says nothing about the branch: review it again, never re-implement it.
-            it.enter("review", f"{action}: {reason}")
-            self.review_batch.append(it.slug)
+        failed_stage = {"REVIEWER-FAILED": "review", "MERGE-CLERK-FAILED": "landing"}.get(
+            str(run.payload.get("event")), ""
+        )
+        if action in ("retry", "adopt") and failed_stage:
+            # A failed reviewer or clerk run says nothing about the branch: rerun that stage, never re-implement.
+            it.enter(failed_stage, f"{action}: {reason}")
+            if failed_stage == "review":
+                self.review_batch.append(it.slug)
         elif action == "retry":
             it.rounds = 0
             it.pending = {"message": "RETRY", "reason": reason}

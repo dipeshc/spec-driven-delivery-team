@@ -146,7 +146,15 @@ Return:
   orchestrator sends the item back to review, not to a developer. A second
   occurrence, or an error only the owner can fix (the engine is unreachable,
   unauthenticated or misconfigured), is `block` naming it.
-- **`MERGE-BLOCKED` / `MERGE-CLERK-FAILED`**: the reason names the condition
+- **`MERGE-CLERK-FAILED`** (the Merge-Clerk run died, or returned nothing
+  usable, after the re-dispatch attempts; the detail names the error, the log
+  and the attempt count): a failed clerk run says nothing about the approved
+  branch. `retry` once when the error looks transient (a timeout, a rate
+  limit) — the orchestrator sends the item back to the Merge-Clerk, not to a
+  developer. A second occurrence, or an error only the owner can fix (the
+  engine is unreachable, unauthenticated or misconfigured), is `block` naming
+  it.
+- **`MERGE-BLOCKED`**: the reason names the condition
   (unsigned commit, attribution trailer, a dirty main tree, a real conflict).
   A condition the developer can repair (amend, rebase by hand) is `retry`
   with that instruction; a condition only the owner can repair is `block`
