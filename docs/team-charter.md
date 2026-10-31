@@ -106,8 +106,10 @@ fenced ```json block holding an object whose `message` key names a payload
 from the [message table](#message-schemas--the-canonical-payload-table). The
 orchestrator parses the last such block and nothing else; a run with no block,
 an unparsable block, or an engine failure is a failed run, re-dispatched or
-escalated by the orchestrator, never read as a verdict. Text before the block
-is for the log.
+escalated by the orchestrator, never read as a verdict. A failed run's reason
+quotes the engine's own error line from the run log (the first error-shaped
+line, else the last non-empty one), so a blocked item explains itself. Text
+before the block is for the log.
 
 **Capability tiers.** Each role file declares its `tier`: `frontier` for the
 judgment roles (Manager, Reviewer, Merge-Clerk, QA, Researcher, consistency

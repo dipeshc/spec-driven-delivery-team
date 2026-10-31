@@ -120,6 +120,20 @@ def test_parse_result_fails_closed(sdt: ModuleType, text: str) -> None:
         sdt.parse_result(text)
 
 
+def test_failure_reason_quotes_engine_error_line(sdt: ModuleType) -> None:
+    log = "starting up\nError: authentication failed, run `login`\nexiting\n"
+    error = sdt.describe_failure(sdt.SdtError("engine stdout holds no JSON object"), 1, log)
+    assert error.startswith("engine stdout holds no JSON object; exit code 1")
+    assert "Error: authentication failed, run `login`" in error
+
+
+def test_failure_reason_falls_back_to_last_line(sdt: ModuleType) -> None:
+    log = "starting up\n\nshutting down quietly\n\n"
+    error = sdt.describe_failure(sdt.SdtError("engine wrote no output file"), 0, log)
+    assert error.endswith("shutting down quietly")
+    assert len(sdt.first_error_line("Error: " + "x" * 500)) == 200
+
+
 def test_extract_json_result_checks_success(sdt: ModuleType, tmp_path: Path) -> None:
     adapter = sdt.load_adapter("claude", [ROOT / "adapters"])
     stream = '{"type":"assistant","message":{}}\n{"type":"result","subtype": "success", "result": "final"}\n'
