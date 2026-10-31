@@ -21,6 +21,17 @@ asks for. Behaviour is keyed on item slugs so a test can stage every path:
 - a slug containing ``qa-blocks`` → QA answers ``QA-BLOCKED`` on the first red tip holding it
 - a slug containing ``consistency-fails`` → every consistency-check run on a tip holding it fails
 
+- a slug containing ``research-me`` → triage sends it to research; the Researcher files a new item
+- a slug containing ``dev-retry`` / ``dev-adopt`` → the developer reports BLOCKED once; the Manager
+  then answers ``retry`` / ``adopt`` and the second attempt succeeds
+- a slug containing ``rounds``   → the reviewer requests changes until the round limit is exceeded;
+  the Manager answers ``retry`` to the REVIEW-ROUNDS-EXCEEDED request
+- a slug containing ``merge-blocked`` → the Merge-Clerk answers MERGE-BLOCKED (the Manager blocks it)
+- a slug containing ``rebase-conflict`` → the Merge-Clerk answers REBASE-REQUIRED once
+- a slug containing ``stale-land`` → the Merge-Clerk first names a sha that is not a fast-forward
+- a slug containing ``envfault`` → the test's gate fails with a marker QA reads in the log, and QA
+  answers ENVIRONMENT
+
 With ``FAKE_REVIEW_WAIT_SECONDS`` set, the first reviewer run waits up to that
 long for a second one to start, so a run with two reviewer instances overlaps.
 
@@ -30,6 +41,9 @@ which the skeptic refutes for the classes in ``REFUTED_CLASSES``; the classes in
 ``ROT_CLASSES`` also each return a ``P3-doc-rot.md``. The audit of a class in
 ``FLAKY_CLASSES`` fails its first run, and with ``FAKE_SWEEP_FAILS`` naming a
 class, every audit of that class fails.
+
+Every message and action the stub emits is appended to ``$FAKE_STATE_DIR/produced.log`` so a test
+can prove which charter payloads the end-to-end runs exercised.
 """
 
 from __future__ import annotations
@@ -51,7 +65,26 @@ def git(*args: str, cwd: Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
 
+def record_entry(*entries: str) -> None:
+    state = Path(os.environ.get("FAKE_STATE_DIR", "/tmp/fake-engine"))
+    state.mkdir(parents=True, exist_ok=True)
+    with open(state / "produced.log", "a") as fh:
+        fh.write("\n".join(entries) + "\n")
+
+
+def record(payload: dict[str, object]) -> None:
+    """Append what this reply says, as ``Message`` or ``Message:action``, to the produced log."""
+    entries = [str(payload.get("message"))]
+    if payload.get("action"):
+        entries.append(f"{payload['message']}:{payload['action']}")
+    items = payload.get("items") if payload.get("message") == "TRIAGE" else None
+    for item in items if isinstance(items, list) else []:
+        entries.append(f"TRIAGE:{item['action']}")
+    record_entry(*entries)
+
+
 def reply(payload: dict[str, object], text: str = "Done.") -> None:
+    record(payload)
     print(text)
     print("```json")
     print(json.dumps(payload, indent=2))
@@ -119,12 +152,14 @@ def main() -> int:
     if role == "consistency-check":
         return consistency_check(payload, prompt, cwd)
     if role == "researcher":
-        slug = payload.get("item", "x")
+        slug = str(payload.get("item", "x"))
         if "research-fails" in slug:
             return fail()
         if "research-dissolves" in slug:
             reply({"message": "NO-ITEM", "finding": "already true: src/ has the behaviour", "why": "nothing to change"})
             return 0
+        # The filed name must not carry the marker, or triage would send it to research again.
+        slug = slug.replace("research-me", "origin")
         reply(
             {
                 "message": "FILED",
@@ -182,7 +217,17 @@ def consistency_check(payload: dict, prompt: str, cwd: Path) -> int:
 
 def manager(payload: dict) -> int:
     if payload.get("message") == "DECISION-REQUEST":
-        reply({"message": "DECISION", "action": "block", "reason": f"blocked after {payload.get('event')}"})
+        slug = str(payload.get("item", ""))
+        record_entry(f"DECISION-REQUEST:{payload.get('event')}:{slug}")
+        action = "block"
+        if "dev-retry" in slug and payload.get("event") == "BLOCKED":
+            action = "retry"
+        elif "dev-adopt" in slug and payload.get("event") == "BLOCKED":
+            action = "adopt"
+        elif "rounds" in slug and payload.get("event") == "REVIEW-ROUNDS-EXCEEDED":
+            action = "retry"
+        verb = "blocked" if action == "block" else action
+        reply({"message": "DECISION", "action": action, "reason": f"{verb} after {payload.get('event')}"})
         return 0
     if any("triage-fails" in i["slug"] for i in payload.get("items", [])):
         return fail()
@@ -210,6 +255,8 @@ def manager(payload: dict) -> int:
             d.update(action="hold", reason="waits on " + ", ".join(waited_on))
         if "research-fails" in slug or "research-dissolves" in slug:
             d.update(action="research", reason="is this already true?")
+        if "research-me" in slug:
+            d.update(action="research", reason="the approach is unclear")
         if slug == grouped[0] if grouped else False:
             d["group"] = grouped[1:]
         decisions.append(d)
@@ -220,7 +267,8 @@ def manager(payload: dict) -> int:
 def developer(payload: dict, cwd: Path, base: str) -> int:
     items = payload.get("items", [])
     slugs = [i["slug"] for i in items]
-    if any("dev-blocks" in s for s in slugs):
+    first_try = any(("dev-retry" in s or "dev-adopt" in s) and counter("dev-" + s) == 0 for s in slugs)
+    if first_try or any("dev-blocks" in s for s in slugs):
         reply(
             {
                 "message": "BLOCKED",
@@ -235,6 +283,8 @@ def developer(payload: dict, cwd: Path, base: str) -> int:
     if any("stall" in s for s in slugs) and counter("stall-" + slugs[0]) == 0:
         time.sleep(int(os.environ.get("FAKE_STALL_SECONDS", "30")))
     resume = payload.get("resume") or {}
+    if resume.get("message"):
+        record_entry(f"IMPLEMENT-RESUME:{resume['message']}:{slugs[0]}")
     if resume.get("message") == "REBASE":
         rebase = subprocess.run(["git", "rebase", base], cwd=cwd, text=True, capture_output=True, check=False)
         if rebase.returncode != 0:
@@ -296,7 +346,17 @@ def reviewer(payload: dict) -> int:
     verdicts = []
     for req in payload.get("requests", []):
         slugs = req["items"]
-        if any("twice" in s for s in slugs) and counter("review-" + slugs[0]) == 0:
+        if any("rounds" in s for s in slugs) and counter("review-" + slugs[0]) < 3:
+            verdicts.append(
+                {
+                    "message": "CHANGES-REQUESTED",
+                    "items": slugs,
+                    "branch": req["branch"],
+                    "comments": ["again"],
+                    "required": ["one more pass"],
+                }
+            )
+        elif any("twice" in s for s in slugs) and counter("review-" + slugs[0]) == 0:
             verdicts.append(
                 {
                     "message": "CHANGES-REQUESTED",
@@ -329,6 +389,10 @@ def qa(payload: dict, cwd: Path) -> int:
     if any("qa-blocks" in m for m in marks) and first_seen("qa-blocks-tip", tip) == tip:
         reply({"message": "QA-BLOCKED", "reason": "the gate needs a service this environment lacks"})
         return 0
+    tail = str(payload.get("log_tail", ""))
+    if "ENV-FAULT" in tail:
+        reply({"message": "ENVIRONMENT", "patterns": ["ENV-FAULT: flaky network"], "reason": "flaky network"})
+        return 0
     reply(
         {
             "message": "REGRESSION",
@@ -345,6 +409,26 @@ def qa(payload: dict, cwd: Path) -> int:
 
 def merge_clerk(payload: dict, cwd: Path, base: str) -> int:
     head = payload["head"]
+    slugs = [str(s) for s in payload["items"]]
+    if any("merge-blocked" in s for s in slugs):
+        reply({"message": "MERGE-BLOCKED", "reason": "the guard named in the dispatch fails"})
+        return 0
+    if any("rebase-conflict" in s for s in slugs) and counter("clerk-rebase-" + slugs[0]) == 0:
+        reply(
+            {
+                "message": "REBASE-REQUIRED",
+                "items": payload["items"],
+                "branch": payload["branch"],
+                "base": git("rev-parse", base, cwd=cwd),
+                "reason": "conflicts with the current base",
+            }
+        )
+        return 0
+    if any("stale-land" in s for s in slugs) and counter("clerk-stale-" + slugs[0]) == 0:
+        # A root commit is never a fast-forward of the default branch.
+        stale = git("commit-tree", f"{head}^{{tree}}", "-m", "stale", cwd=cwd)
+        reply({"message": "LANDABLE", "items": payload["items"], "sha": stale, "rebased": False, "verification": []})
+        return 0
     base_sha = git("rev-parse", base, cwd=cwd)
     if subprocess.run(["git", "merge-base", "--is-ancestor", base_sha, head], cwd=cwd, check=False).returncode == 0:
         reply({"message": "LANDABLE", "items": payload["items"], "sha": head, "rebased": False, "verification": []})

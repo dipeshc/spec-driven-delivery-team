@@ -36,6 +36,19 @@ adopt_attempts = 1
 consistency_every = 2
 """
 
+FAULT_GATE = """#!/bin/sh
+# red, with a marker QA reads in the log, once an envfault item has landed
+ls src/*envfault*.txt >/dev/null 2>&1 && { echo "ERROR ENV-FAULT: flaky network"; exit 1; }
+exit 0
+"""
+
+KNOWN_FAILURES = "docs/known-failures.txt"
+
+# What the stub emitted across the scenario tests below, and which scenarios have run.
+SEEN: set[str] = set()
+SCENARIOS_RUN: set[str] = set()
+SCENARIOS = {"decision-paths", "hold", "environment-ruling", "qa-blocked", "no-item", "regression", "stub-paths"}
+
 GATE = "#!/bin/sh\n# red once an item whose slug contains 'red' has landed\nls src/*red*.txt >/dev/null 2>&1 && exit 1\nexit 0\n"
 
 
@@ -43,7 +56,7 @@ def git(*args: str, cwd: Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
 
-def make_repo(tmp_path: Path, slugs: list[str]) -> Path:
+def make_repo(tmp_path: Path, slugs: list[str], *, gate: str = "", extra_config: str = "") -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     git("init", "-q", "-b", "main", cwd=repo)
@@ -53,9 +66,9 @@ def make_repo(tmp_path: Path, slugs: list[str]) -> Path:
     (repo / "docs" / "backlog").mkdir(parents=True)
     (repo / "src").mkdir()
     (repo / "src" / ".keep").write_text("")
-    (repo / "gate.sh").write_text(GATE)
+    (repo / "gate.sh").write_text(gate or GATE)
     (repo / ".delivery-team").mkdir()
-    (repo / ".delivery-team" / "config.toml").write_text(CONFIG)
+    (repo / ".delivery-team" / "config.toml").write_text(CONFIG + extra_config)
     (repo / ".delivery-team" / "profile.md").write_text("# Profile\n\nDocs are spec: no.\n")
     (repo / ".gitignore").write_text(".delivery-team/*\n!.delivery-team/config.toml\n!.delivery-team/profile.md\n")
     for slug in slugs:
@@ -68,7 +81,7 @@ def make_repo(tmp_path: Path, slugs: list[str]) -> Path:
 def run_sdt(repo: Path, *args: str, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ, FAKE_STATE_DIR=str(repo.parent / "fake-state"), FAKE_STALL_SECONDS="8")
     env.update(env_extra or {})
-    return subprocess.run(
+    proc = subprocess.run(
         ["python3", str(SDT), *args, "--adapter-dir", str(ROOT / "tests" / "adapters")],
         cwd=repo,
         text=True,
@@ -76,6 +89,10 @@ def run_sdt(repo: Path, *args: str, env_extra: dict[str, str] | None = None) -> 
         env=env,
         timeout=300,
     )
+    produced = repo.parent / "fake-state" / "produced.log"
+    if produced.is_file():
+        SEEN.update(produced.read_text().split())
+    return proc
 
 
 def role_runs(repo: Path, role: str) -> list[str]:
@@ -173,6 +190,95 @@ def test_full_pipeline(repo: Path) -> None:
     assert branches == {"item/P2-dev-blocks"}, branches
     assert git("status", "--porcelain", cwd=repo) == ""
     assert git("config", "--get", "rerere.enabled", cwd=repo) == "false"
+    assert "REGRESSION" in produced(repo) and "DECISION:block" in produced(repo)
+    SCENARIOS_RUN.update({"regression", "stub-paths"})
+
+
+def produced(repo: Path) -> list[str]:
+    return (repo.parent / "fake-state" / "produced.log").read_text().split()
+
+
+def test_decision_and_verdict_paths(tmp_path: Path) -> None:
+    slugs = [
+        "P1-dev-retry",
+        "P1-dev-adopt",
+        "P2-rounds",
+        "P2-merge-blocked",
+        "P2-rebase-conflict",
+        "P2-stale-land",
+        "P2-research-me",
+    ]
+    repo = make_repo(tmp_path, slugs)
+    proc = run_sdt(repo, "run")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    SCENARIOS_RUN.add("decision-paths")
+    final = json.loads(proc.stdout.strip().splitlines()[-1])
+    # retry, adopt, rounds, rebase-conflict, stale-land and the item the Researcher filed
+    assert final["landed"] == 6, proc.stdout
+    assert "P2-merge-blocked" in final["blocked"]
+    assert "P2-researched-P2-origin" not in final["blocked"]
+
+    emitted = produced(repo)
+    for entry in (
+        "DECISION:retry",
+        "DECISION:adopt",
+        "DECISION:block",
+        "TRIAGE:research",
+        "FILED",
+        "MERGE-BLOCKED",
+        "REBASE-REQUIRED",
+    ):
+        assert entry in emitted, (entry, emitted)
+
+    # the merge-blocked item went to blocked/ with the reason
+    backlog = repo / "docs" / "backlog"
+    assert (backlog / "blocked" / "P2-merge-blocked.md").is_file()
+    subjects = git("log", "--no-show-signature", "--format=%s", "main", cwd=repo).splitlines()
+
+    # research: the Researcher's item is filed, the originating item retired, then the filed item lands
+    assert any("file 1 item(s) — research for P2-research-me" in s for s in subjects), subjects
+    assert any("retire P2-research-me — superseded by researched item(s)" in s for s in subjects), subjects
+    assert any(s.startswith("feat(P2-researched-P2-origin)") for s in subjects), subjects
+    assert not (backlog / "P2-research-me.md").exists()
+
+    # the merge-clerk's stale sha is rejected and verified again; the rebase request is worked
+    assert "re-verifying on the new tip" in proc.stdout, proc.stdout
+    assert "IMPLEMENT-RESUME:REBASE:P2-rebase-conflict" in emitted, emitted
+    # retry and adopt resume the developer differently
+    assert "IMPLEMENT-RESUME:RETRY:P1-dev-retry" in emitted, emitted
+    assert "IMPLEMENT-RESUME:ADOPT:P1-dev-adopt" in emitted, emitted
+    # the review-round cap escalates to the Manager, who answers retry
+    assert "DECISION-REQUEST:REVIEW-ROUNDS-EXCEEDED:P2-rounds" in emitted, emitted
+    assert git("rev-list", "--count", "--merges", "main", cwd=repo) == "0"
+    assert git("status", "--porcelain", cwd=repo) == ""
+
+
+def test_environment_ruling_is_recorded_then_filtered(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P1-envfault"], gate=FAULT_GATE, extra_config=f'known_failures = "{KNOWN_FAILURES}"\n')
+    proc = run_sdt(repo, "run")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["landed"] == 1
+    assert produced(repo).count("ENVIRONMENT") == 1
+
+    # QA's ruling is appended to the known-failures file and committed on its own
+    known = (repo / KNOWN_FAILURES).read_text()
+    assert "ENV-FAULT: flaky network" in known
+    subjects = git("log", "--no-show-signature", "--format=%s", "main", cwd=repo).splitlines()
+    assert any(s.startswith("chore(qa): record known failure") for s in subjects), subjects
+    assert git("status", "--porcelain", cwd=repo) == ""
+
+    # the same red on a later tip is filtered: the gate goes green and QA is not asked again
+    later = repo / "docs" / "backlog" / "P2-later.md"
+    later.parent.mkdir(parents=True, exist_ok=True)
+    later.write_text("# P2-later\n\nAppend 'done' to src/P2-later.txt.\n")
+    git("add", "-A", cwd=repo)
+    git("commit", "-q", "-m", "chore(backlog): file P2-later", cwd=repo)
+    proc = run_sdt(repo, "run")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["landed"] == 1
+    assert "qa-green" in proc.stdout and "qa-red" not in proc.stdout, proc.stdout
+    assert produced(repo).count("ENVIRONMENT") == 1
+    SCENARIOS_RUN.add("environment-ruling")
 
 
 def test_stalled_developer_is_adopted(tmp_path: Path) -> None:
@@ -195,6 +301,7 @@ def test_held_item_waits_for_what_it_waits_on(tmp_path: Path) -> None:
     dispatched = proc.stdout.index("dispatch: P2-held")
     assert held < landed < dispatched, "the held item is dispatched only once what it waits on has landed"
     assert proc.stdout.count("dispatch: P2-held") == 1
+    SCENARIOS_RUN.add("hold")
 
 
 def test_role_keeps_notes_and_sends_run_consistency(repo: Path) -> None:
@@ -257,6 +364,7 @@ def test_qa_blocked_reason_is_surfaced(tmp_path: Path) -> None:
     assert qa["state"].endswith("qa blocked: " + reason), qa
     assert any(e["kind"] == "qa-blocked" and reason in e["text"] for e in state["events"]), state["events"]
     assert "regression filed" not in proc.stdout
+    SCENARIOS_RUN.add("qa-blocked")
 
 
 def test_research_failure_blocks_and_no_item_retires(tmp_path: Path) -> None:
@@ -280,6 +388,7 @@ def test_research_failure_blocks_and_no_item_retires(tmp_path: Path) -> None:
     assert message.startswith("chore(backlog): retire P2-research-dissolves — already true")
     assert "Finding: already true: src/ has the behaviour" in message and "Why: nothing to change" in message
     assert git("show", "--no-show-signature", "--name-status", "--format=", sha, cwd=repo) == f"D\t{rel}"
+    SCENARIOS_RUN.add("no-item")
 
     # a retired item is closed without landing: the board counts only what DRAINED counts as landed
     state = json.loads((repo / ".delivery-team" / "progress" / "state.json").read_text())
@@ -433,3 +542,27 @@ def test_install_links_skills_and_snippet(repo: Path) -> None:
 
     proc = run_sdt(repo, "install", "--harness", "claude")
     assert (repo / ".claude" / "skills" / "board").is_symlink()
+
+
+def test_every_charter_payload_was_produced() -> None:
+    """The stub produced every Manager, Merge-Clerk, QA and Researcher message and action in the charter."""
+    if not SCENARIOS <= SCENARIOS_RUN:
+        pytest.skip("needs the other end-to-end scenarios to have run first")
+    required = {
+        "TRIAGE:dispatch",
+        "TRIAGE:hold",
+        "TRIAGE:block",
+        "TRIAGE:research",
+        "DECISION:block",
+        "DECISION:retry",
+        "DECISION:adopt",
+        "LANDABLE",
+        "MERGE-BLOCKED",
+        "REBASE-REQUIRED",
+        "REGRESSION",
+        "ENVIRONMENT",
+        "QA-BLOCKED",
+        "FILED",
+        "NO-ITEM",
+    }
+    assert required <= SEEN, sorted(required - SEEN)
