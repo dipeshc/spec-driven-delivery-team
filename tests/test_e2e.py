@@ -150,6 +150,19 @@ def test_stalled_developer_is_adopted(tmp_path: Path) -> None:
     assert "stalled" in proc.stdout and "adopt" in proc.stdout
 
 
+def test_held_item_waits_for_what_it_waits_on(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P1-first", "P2-held"])
+    proc = run_sdt(repo, "run")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    final = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert final["landed"] == 2, proc.stdout
+    held = proc.stdout.index("held: P2-held: waits on P1-first")
+    landed = proc.stdout.index("merged: P1-first landed")
+    dispatched = proc.stdout.index("dispatch: P2-held")
+    assert held < landed < dispatched, "the held item is dispatched only once what it waits on has landed"
+    assert proc.stdout.count("dispatch: P2-held") == 1
+
+
 def test_status_without_run(repo: Path) -> None:
     proc = run_sdt(repo, "status")
     assert proc.returncode == 0

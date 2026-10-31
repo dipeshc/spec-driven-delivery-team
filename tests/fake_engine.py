@@ -8,6 +8,7 @@ asks for. Behaviour is keyed on item slugs so a test can stage every path:
 
 - a slug containing ``twice``    → the reviewer requests changes once, then approves
 - a slug containing ``block-me`` → triage blocks it
+- a slug containing ``held``     → triage holds it until every other item has landed or blocked
 - a slug containing ``dev-blocks`` → the developer reports BLOCKED (triage then blocks it)
 - slugs starting ``P3-group-``   → triage groups them into one branch
 - a slug containing ``stall``    → the developer sleeps past the stall limit once
@@ -105,6 +106,10 @@ def manager(payload: dict) -> int:
         return 0
     decisions = []
     grouped = [i["slug"] for i in payload.get("items", []) if str(i["slug"]).startswith("P3-group-")]
+    open_slugs = [str(i["slug"]) for i in payload.get("items", [])] + [
+        str(f["slug"]) for f in payload.get("in_flight", []) if f.get("stage") not in ("done", "blocked")
+    ]
+    waited_on = sorted(s for s in open_slugs if "held" not in s)
     for item in payload.get("items", []):
         slug = item["slug"]
         if slug in grouped[1:]:
@@ -119,6 +124,8 @@ def manager(payload: dict) -> int:
         }
         if "block-me" in slug:
             d.update(action="block", reason="needs an owner decision")
+        if "held" in slug and waited_on:
+            d.update(action="hold", reason="waits on " + ", ".join(waited_on))
         if slug == grouped[0] if grouped else False:
             d["group"] = grouped[1:]
         decisions.append(d)

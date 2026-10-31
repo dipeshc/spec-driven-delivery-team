@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -177,6 +178,100 @@ def test_prompt_shape(sdt: ModuleType) -> None:
     assert "- scoped gate: a, b" in prompt
     assert "## Dispatch" in prompt and '"message": "IMPLEMENT"' in prompt
     assert "## Result contract" in prompt
+
+
+# ---- triage
+
+
+def triage_orchestrator(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slugs: list[str]
+) -> tuple[Any, list[dict[str, Any]]]:
+    """An orchestrator on a scratch repository whose role runs are recorded, never spawned."""
+    repo = tmp_path / "repo"
+    (repo / "docs" / "backlog").mkdir(parents=True)
+    (repo / ".delivery-team").mkdir()
+    (repo / ".delivery-team" / "config.toml").write_text('[engine]\ndefault = "fake"\n')
+    for slug in slugs:
+        (repo / "docs" / "backlog" / f"{slug}.md").write_text(f"# {slug}\n")
+    sdt.git("init", "-q", "-b", "main", cwd=repo)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test"), ("commit.gpgsign", "false")):
+        sdt.git("config", key, value, cwd=repo)
+    commit_all(sdt, repo, "chore: seed")
+    orch = sdt.Orchestrator(
+        sdt.Project(repo, [ROOT / "tests" / "adapters"]), engine="fake", watch=False, label="t", args_text=""
+    )
+    requests: list[dict[str, Any]] = []
+
+    def start_run(role_name: str, payload: dict[str, Any], **kw: Any) -> SimpleNamespace:
+        requests.append(payload)
+        return SimpleNamespace(role=SimpleNamespace(name=role_name), payload=payload, tag=kw.get("tag", ""))
+
+    monkeypatch.setattr(orch.p, "start_run", start_run)
+    monkeypatch.setattr(orch.p, "ensure_detached_worktree", lambda name: tmp_path)
+    return orch, requests
+
+
+def commit_all(sdt: ModuleType, repo: Path, message: str) -> None:
+    sdt.git("add", "-A", cwd=repo)
+    sdt.git("commit", "-q", "-m", message, cwd=repo)
+
+
+def answer_triage(sdt: ModuleType, orch: Any, request: dict[str, Any], decisions: list[dict[str, Any]]) -> None:
+    run = SimpleNamespace(role=SimpleNamespace(name="manager"), tag="triage", payload=request)
+    orch.on_manager(run, sdt.RunResult(ok=True, payload={"message": "TRIAGE", "items": decisions}))
+
+
+def triaged_slugs(request: dict[str, Any]) -> list[str]:
+    assert request["message"] == "TRIAGE-REQUEST"
+    return [i["slug"] for i in request["items"]]
+
+
+def test_held_items_never_dispatch_and_are_asked_again(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch, requests = triage_orchestrator(sdt, tmp_path, monkeypatch, ["P1-a", "P2-b"])
+    orch.intake()
+    hold = {"action": "hold", "reason": "waits on in-flight work"}
+    answer_triage(sdt, orch, requests[-1], [{"slug": "P1-a", **hold}, {"slug": "P2-b", **hold}])
+    assert orch.items["P1-a"].held and orch.items["P2-b"].held
+    orch.dispatch_ready()
+    assert len(requests) == 1, "a held item is never dispatched"
+
+    (orch.p.backlog / "P3-c.md").write_text("# P3-c\n")
+    commit_all(sdt, orch.p.root, "chore(backlog): file P3-c")
+    orch.intake()
+    assert len(requests) == 2 and triaged_slugs(requests[-1]) == ["P1-a", "P2-b", "P3-c"]
+    assert requests[-1]["in_flight"] == [], "an item sent for triage is not also in flight"
+    answer_triage(sdt, orch, requests[-1], [{"slug": "P1-a", "action": "dispatch"}, {"slug": "P2-b", **hold}])
+    assert not orch.items["P1-a"].held and orch.items["P1-a"].stage == "queued"
+    assert orch.items["P2-b"].held
+    assert sorted(orch.items) == ["P1-a", "P2-b", "P3-c"]
+
+
+def test_item_moved_back_out_of_blocked_is_triaged_again(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch, requests = triage_orchestrator(sdt, tmp_path, monkeypatch, ["P1-a"])
+    backlog = orch.p.backlog
+    monkeypatch.setattr(orch, "landing_in_flight", lambda: True)
+    orch.intake()
+    answer_triage(sdt, orch, requests[-1], [{"slug": "P1-a", "action": "block", "reason": "owner call"}])
+    assert orch.items["P1-a"].stage == "blocked" and (backlog / "P1-a.md").is_file()
+    orch.intake()
+    assert len(requests) == 1, "a block still waiting on a landing is not mistaken for an owner's unblock"
+
+    monkeypatch.setattr(orch, "landing_in_flight", lambda: False)
+    orch.flush_housekeeping()
+    assert (backlog / "blocked" / "P1-a.md").is_file() and not (backlog / "P1-a.md").exists()
+    orch.intake()
+    assert len(requests) == 1
+
+    sdt.git("mv", str(backlog / "blocked" / "P1-a.md"), str(backlog / "P1-a.md"), cwd=orch.p.root)
+    commit_all(sdt, orch.p.root, "chore(backlog): unblock P1-a")
+    orch.intake()
+    assert len(requests) == 2 and triaged_slugs(requests[-1]) == ["P1-a"]
+    answer_triage(sdt, orch, requests[-1], [{"slug": "P1-a", "action": "dispatch"}])
+    assert orch.items["P1-a"].stage == "queued" and not orch.items["P1-a"].parked
 
 
 # ---- invariants

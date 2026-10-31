@@ -1020,11 +1020,17 @@ class Item:
     pending: dict[str, Any] = field(default_factory=dict)
     run_id: str = ""
     deciding: bool = False
+    held: bool = False
+    parked: bool = False
 
     def enter(self, stage: str, text: str = "") -> None:
         self.stage = stage
         self.stage_entered_at = now()
         self.history.append({"at": self.stage_entered_at, "stage": stage, "text": text})
+
+    def retriageable(self) -> bool:
+        """Held, or blocked with its file moved into blocked/: its file in the backlog root is triaged afresh."""
+        return self.held or (self.stage == "blocked" and self.parked)
 
 
 class Orchestrator:
@@ -1158,14 +1164,17 @@ class Orchestrator:
     # -- intake
 
     def intake(self) -> None:
-        """Triage new backlog items through the manager role; adopt in-flight branches."""
+        """Triage new, held and unblocked backlog items through the manager role; adopt in-flight branches."""
         backlog = self.p.scan_backlog()
-        known = {s for it in self.items.values() for s in it.slugs}
+        known = {s for it in self.items.values() if not it.retriageable() for s in it.slugs}
         fresh = [b for b in backlog if b.slug not in known]
         if not fresh or self.manager_busy:
             return
+        sent = {b.slug for b in fresh}
         in_flight = [
-            {"slug": it.slug, "stage": it.stage, "branch": it.branch, "ports": it.ports} for it in self.items.values()
+            {"slug": it.slug, "stage": it.stage, "branch": it.branch, "ports": it.ports}
+            for it in self.items.values()
+            if not sent & set(it.slugs)
         ]
         payload = {
             "message": "TRIAGE-REQUEST",
@@ -1185,6 +1194,11 @@ class Orchestrator:
         decisions = payload.get("items", [])
         if not isinstance(decisions, list):
             raise SdtError("TRIAGE payload has no items list")
+        # A slug settled since the request went out (an overlapping triage) keeps its item; the rest replace theirs.
+        known = {s for it in self.items.values() if not it.retriageable() for s in it.slugs}
+        fresh = {s: b for s, b in fresh.items() if s not in known}
+        for old in [it.slug for it in self.items.values() if fresh.keys() & set(it.slugs)]:
+            del self.items[old]
         seen: set[str] = set()
         for d in decisions:
             if not isinstance(d, dict):
@@ -1212,7 +1226,7 @@ class Orchestrator:
             item.branch = self.p.item_branch(slug)
             if action == "block":
                 reason = str(d.get("reason", "blocked at triage"))
-                self.housekeep(f"block {slug}", partial(self.p.block_item, fresh[slug], reason))
+                self.housekeep(f"block {slug}", partial(self.park, item, reason))
                 item.enter("blocked", "blocked at triage")
                 self.items[slug] = item
                 self.event("blocked", f"{slug}: {item.note}")
@@ -1236,12 +1250,14 @@ class Orchestrator:
                 )
             elif action == "research":
                 reason = "needs research: " + str(d.get("reason", ""))
-                self.housekeep(f"block {slug}", partial(self.p.block_item, fresh[slug], reason))
+                self.housekeep(f"block {slug}", partial(self.park, item, reason))
                 item.enter("blocked", "needs research (no researcher role shipped)")
                 self.items[slug] = item
             elif action == "hold":
+                item.held = True
                 item.enter("queued", "held: " + str(d.get("reason", "")))
                 self.items[slug] = item
+                self.event("held", f"{slug}: {item.note}")
             else:
                 item.enter("queued", "triaged")
                 self.items[slug] = item
@@ -1272,11 +1288,7 @@ class Orchestrator:
 
     def dispatch_ready(self) -> None:
         queued = sorted(
-            (
-                it
-                for it in self.items.values()
-                if it.stage == "queued" and not it.deciding and not it.note.startswith("held")
-            ),
+            (it for it in self.items.values() if it.stage == "queued" and not it.deciding and not it.held),
             key=lambda i: (i.priority, i.rounds == 0, i.slug),
         )
         for it in queued:
@@ -1408,14 +1420,16 @@ class Orchestrator:
         it.deciding = True
         self.start(self.p.start_run("manager", payload, cwd=self.p.ensure_detached_worktree("manager"), tag=it.slug))
 
-    def block(self, it: Item, reason: str) -> None:
-        def move() -> None:
-            for slug, rel in zip(it.slugs, it.paths, strict=True):
-                path = self.p.root / rel
-                if path.is_file():
-                    self.p.block_item(BacklogItem(slug, path, it.priority, path.read_text()), reason)
+    def park(self, it: Item, reason: str) -> None:
+        """Move every file of the item into blocked/; one the owner moves back is re-triaged."""
+        for slug, rel in zip(it.slugs, it.paths, strict=True):
+            path = self.p.root / rel
+            if path.is_file():
+                self.p.block_item(BacklogItem(slug, path, it.priority, path.read_text()), reason)
+        it.parked = True
 
-        self.housekeep(f"block {it.slug}", move)
+    def block(self, it: Item, reason: str) -> None:
+        self.housekeep(f"block {it.slug}", partial(self.park, it, reason))
         it.note = reason
         it.enter("blocked", reason)
         self.event("blocked", f"{it.slug}: {reason}")
@@ -1772,7 +1786,8 @@ class Orchestrator:
                 )
                 self.on_run_done(run, res)
         backlog_sha = self.p.backlog_sha()
-        if backlog_sha != self.last_backlog_sha or not self.items:
+        # A change seen while the manager is busy stays unconsumed, so held items are still re-asked.
+        if (backlog_sha != self.last_backlog_sha or not self.items) and not self.manager_busy:
             self.last_backlog_sha = backlog_sha
             self.intake()
         self.flush_housekeeping()
