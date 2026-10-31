@@ -601,6 +601,11 @@ class RoleRun:
             if hasattr(stdin, "close"):
                 stdin.close()
 
+    @property
+    def last_signal(self) -> int:
+        """Epoch seconds of the last log growth; the start time for a run that has not written yet."""
+        return self._last_growth
+
     def poll(self) -> bool:
         """True once the process has ended; kills it on timeout or stall."""
         if self.proc is None or self.proc.poll() is not None:
@@ -1120,10 +1125,14 @@ class Orchestrator:
                 {
                     "role": f"{run.role.name}" + (f" {run.tag}" if run.tag else ""),
                     "state": f"running on {run.adapter.name}/{run.model or 'default'} for {run.alive_for() // 60} min",
-                    "lastSignalAt": now(),
+                    "lastSignalAt": run.last_signal,
                 }
             )
-        agents.append({"role": "QA", "state": self.qa_state, "lastSignalAt": now()})
+        qa_row: dict[str, Any] = {"role": "QA", "state": self.qa_state}
+        qa_signals = [r.last_signal for r in self.runs if r.role.name == "qa"]
+        if qa_signals:
+            qa_row["lastSignalAt"] = max(qa_signals)
+        agents.append(qa_row)
         items = []
         for it in self.items.values():
             row: dict[str, Any] = {

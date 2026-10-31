@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from functools import partial
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -672,6 +673,24 @@ def test_install_reruns_when_the_lockfile_changes(sdt: ModuleType, tmp_path: Pat
     commit(sdt, project.root, "deps", "v2")
     project.reset_detached(wt, "main")
     assert installs.read_text().splitlines() == ["ran", "ran"]
+
+
+def test_ledger_last_signal_is_the_last_log_growth(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch, _ = triage_orchestrator(sdt, tmp_path, monkeypatch, [])
+    monkeypatch.setattr(orch.cfg, "board_enabled", True)
+    started = sdt.now() - 300
+    role = SimpleNamespace(name="developer")
+    adapter = SimpleNamespace(name="fake")
+    silent = SimpleNamespace(role=role, tag="a", adapter=adapter, model="", alive_for=lambda: 300, last_signal=started)
+    orch.runs = [silent]
+    orch.write_ledger()
+    state = json.loads((orch.p.board_dir / "state.json").read_text())
+    rows = {a["role"]: a for a in state["agents"]}
+    assert rows["developer a"]["lastSignalAt"] == started
+    assert rows["developer a"]["lastSignalAt"] < state["generatedAt"]
+    assert "lastSignalAt" not in rows["QA"], "an idle QA row carries no signal"
 
 
 # ---- invariants
