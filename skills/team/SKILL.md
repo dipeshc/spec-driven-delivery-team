@@ -16,7 +16,7 @@ Steward a delivery run. You — the owner's harness session — stay thin: you
 items, report from the ledger, and surface blocks**. You never triage,
 implement, review or merge on the team lane: the orchestrator (`sdt`) owns
 that loop, running every role as a headless engine process in its own
-worktree and keeping all state in git plus the progress ledger.
+worktree and keeping its durable state in git and mirroring the run to the progress ledger.
 
 `sdt` is the framework's `bin/sdt`. It is on your PATH when the framework was
 installed as a plugin or with `sdt install --bin-dir <dir>`; otherwise call it

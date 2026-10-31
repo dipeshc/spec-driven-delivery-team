@@ -299,8 +299,10 @@ returns in its result for the orchestrator to apply.
    deleting a researched item; items filed from any role's `sdt role
    --file-items` run; worktree and branch lifecycle; and the
    **progress ledger** (`<repo>/.delivery-team/progress/state.js`, its
-   `state.json` twin and the copied `dashboard.html`) — runtime state written
-   on every tick, never committed. The orchestrator is the **only** writer
+   `state.json` twin and the copied `dashboard.html`), a run's
+   `notes_for_next_run` (appended to its role's notes file), and each run's
+   prompt and log plus the pid lock under `.delivery-team/runs/` — runtime
+   state written as the run goes, never committed. The orchestrator is the **only** writer
    that removes an item worktree or deletes an item branch; a role leaves both
    on disk and reports.
 4. **The owner's session** — backlog item files and the framework files under
@@ -329,7 +331,7 @@ its pipeline state and git reconciliation to
 cadence — a continuously-rendering surface needs fresh state between reports. The file is a single statement, `window.TEAM_STATE = { … };`, written
 **atomically** (write a temp file, `mv` it into place) so no reader ever sees a
 half-written frame. It lives under `.delivery-team/`, is never committed, and is
-disposable: it is a projection of git plus the ledger, so deleting it costs
+disposable: it is a projection of git plus the orchestrator's pipeline state, so deleting it costs
 nothing and losing it is not losing state. A `state.json` twin carrying the same
 object may be written for non-browser consumers; when it is, `state.js` is that
 JSON wrapped mechanically (`window.TEAM_STATE = ` + the JSON + `;`).

@@ -2,9 +2,9 @@
 """sdt — the spec-driven delivery team orchestrator.
 
 Runs every team role as a headless, worktree-confined process on whatever coding
-CLI the project configures (an *engine*, described by an adapter), and keeps the
-pipeline state in git plus the progress ledger. It is the only component that
-talks to an engine, and it never pushes.
+CLI the project configures (an *engine*, described by an adapter), and keeps its
+durable state in git and mirrors the pipeline to the progress ledger. It is the
+only component that talks to an engine, and it never pushes.
 
 Standard library only; Python 3.11+.
 """
