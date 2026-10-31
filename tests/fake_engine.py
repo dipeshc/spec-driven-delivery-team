@@ -13,6 +13,9 @@ asks for. Behaviour is keyed on item slugs so a test can stage every path:
 - slugs starting ``P3-group-``   → triage groups them into one branch
 - a slug containing ``stall``    → the developer sleeps past the stall limit once
 - a slug containing ``red``      → implemented so the test's gate fails (a regression)
+
+With ``FAKE_REVIEW_WAIT_SECONDS`` set, the first reviewer run waits up to that
+long for a second one to start, so a run with two reviewer instances overlaps.
 """
 
 from __future__ import annotations
@@ -45,6 +48,17 @@ def counter(name: str) -> int:
     value = int(path.read_text()) if path.is_file() else 0
     path.write_text(str(value + 1))
     return value
+
+
+def wait_for(name: str, value: int, seconds: float) -> None:
+    """Poll a counter until it reaches `value` or `seconds` pass, printing so the log keeps growing."""
+    path = Path(os.environ.get("FAKE_STATE_DIR", "/tmp/fake-engine")) / name
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if path.is_file() and int(path.read_text() or 0) >= value:
+            return
+        print("waiting", flush=True)
+        time.sleep(0.2)
 
 
 def main() -> int:
@@ -206,6 +220,9 @@ def developer(payload: dict, cwd: Path, base: str) -> int:
 
 
 def reviewer(payload: dict) -> int:
+    wait = float(os.environ.get("FAKE_REVIEW_WAIT_SECONDS", "0"))
+    if counter("reviewer-runs") == 0 and wait:
+        wait_for("reviewer-runs", 2, wait)
     verdicts = []
     for req in payload.get("requests", []):
         slugs = req["items"]

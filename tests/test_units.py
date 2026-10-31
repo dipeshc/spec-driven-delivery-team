@@ -222,7 +222,7 @@ def triage_orchestrator(
         return SimpleNamespace(role=SimpleNamespace(name=role_name), payload=payload, tag=kw.get("tag", ""))
 
     monkeypatch.setattr(orch.p, "start_run", start_run)
-    monkeypatch.setattr(orch.p, "ensure_detached_worktree", lambda name: tmp_path)
+    monkeypatch.setattr(orch, "pooled_worktree", lambda role, ref: tmp_path)
     return orch, requests
 
 
@@ -378,6 +378,181 @@ def test_outside_tip_racing_housekeeping_is_gated(
     on_top = str(sdt.git("rev-parse", "main", cwd=repo))
     orch.tick()
     assert orch.qa_green_tip == on_top, "an outside commit on top of the housekeeping commit is gated"
+
+
+# ---- role worktrees and routing
+
+
+def make_project(sdt: ModuleType, tmp_path: Path, config: str = "") -> Any:
+    """A Project on a fresh one-commit repository, its runtime dirs created."""
+    repo = tmp_path / "repo"
+    (repo / ".delivery-team").mkdir(parents=True)
+    (repo / ".delivery-team" / "config.toml").write_text(config)
+    (repo / ".gitignore").write_text(".delivery-team/*\n!.delivery-team/config.toml\n")
+    sdt.git("init", "-q", "-b", "main", cwd=repo)
+    sdt.git("config", "user.email", "t@example.com", cwd=repo)
+    sdt.git("config", "user.name", "Test", cwd=repo)
+    sdt.git("config", "commit.gpgsign", "false", cwd=repo)
+    commit(sdt, repo, "seed")
+    project = sdt.Project(repo)
+    project.ensure_dirs()
+    return project
+
+
+def commit(sdt: ModuleType, repo: Path, name: str, text: str = "") -> str:
+    (repo / f"{name}.txt").write_text(text or name)
+    commit_all(sdt, repo, name)
+    return head(sdt, repo)
+
+
+def head(sdt: ModuleType, path: Path) -> str:
+    return str(sdt.git("rev-parse", "HEAD", cwd=path))
+
+
+@pytest.fixture
+def orch(sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """An orchestrator whose role runs are recorded in `orch.started`, never spawned."""
+    project = make_project(sdt, tmp_path, "[board]\nenabled = false\n")
+    o = sdt.Orchestrator(project, engine=None, watch=False, label="t", args_text="")
+    o.started = []
+
+    def start_run(role_name: str, payload: dict[str, Any], *, cwd: Path, tag: str = "", **_: Any) -> Any:
+        run = SimpleNamespace(role=SimpleNamespace(name=role_name), cwd=cwd, tag=tag, payload=payload, id="", model="")
+        o.started.append(run)
+        return run
+
+    monkeypatch.setattr(project, "start_run", start_run)
+    return o
+
+
+def review_item(sdt: ModuleType, o: Any, slug: str) -> Any:
+    sdt.git("branch", f"item/{slug}", cwd=o.p.root)
+    it = sdt.Item(slug=slug, slugs=[slug], priority="P2", paths=[], texts={slug: slug})
+    it.branch = f"item/{slug}"
+    it.enter("review")
+    o.items[slug] = it
+    return it
+
+
+def test_consistency_never_works_in_a_live_qa_tree(sdt: ModuleType, orch: Any) -> None:
+    qa = orch.p.ensure_detached_worktree("qa")
+    (qa / "bisect-in-progress").write_text("")
+    orch.start(SimpleNamespace(role=SimpleNamespace(name="qa"), cwd=qa, tag="t"))
+    orch.consistency_due = True
+    orch.run_consistency()
+    (audit,) = orch.started
+    assert audit.role.name == "consistency-check"
+    assert audit.cwd != qa
+    assert audit.cwd == orch.p.worktree_path("consistency-check")
+    assert (qa / "bisect-in-progress").exists(), "the live QA run's tree was reset"
+
+
+def test_gate_leaves_a_live_consistency_tree_alone(sdt: ModuleType, orch: Any) -> None:
+    orch.consistency_due = True
+    orch.run_consistency()
+    (audit,) = orch.started
+    audited = head(sdt, audit.cwd)
+    (audit.cwd / "audit-notes").write_text("")
+    tip = commit(sdt, orch.p.root, "landed")
+    orch.cfg.gate_full = ["true"]
+    orch.qa_pending_tip = tip
+    orch.run_qa_gate()
+    assert orch.qa_green_tip == tip
+    assert head(sdt, orch.p.worktree_path("qa")) == tip
+    assert head(sdt, audit.cwd) == audited
+    assert (audit.cwd / "audit-notes").exists(), "the gate reset the live consistency tree"
+
+
+def test_role_worktree_refuses_a_tree_a_live_run_works_in(sdt: ModuleType, orch: Any) -> None:
+    wt = orch.role_worktree("merge-clerk", "main")
+    (wt / "mid-rebase").write_text("")
+    orch.start(SimpleNamespace(role=SimpleNamespace(name="merge-clerk"), cwd=wt, tag="t"))
+    assert orch.role_worktree("merge-clerk", "main") is None
+    assert (wt / "mid-rebase").exists()
+
+
+def test_manager_starts_at_the_moved_tip(sdt: ModuleType, orch: Any) -> None:
+    backlog = orch.p.backlog
+    backlog.mkdir(parents=True)
+    (backlog / "P1-x.md").write_text("# x\n")
+    first_tip = commit(sdt, orch.p.root, "file-item")
+    orch.intake()
+    (triage,) = orch.started
+    assert head(sdt, triage.cwd) == first_tip
+    (triage.cwd / "left-behind").write_text("")
+    orch.runs.remove(triage)
+    orch.manager_busy = False
+    moved_tip = commit(sdt, orch.p.root, "moved")
+    it = sdt.Item(slug="P1-x", slugs=["P1-x"], priority="P1", paths=["docs/backlog/P1-x.md"], texts={"P1-x": ""})
+    orch.ask_manager(it, "BLOCKED", {})
+    decision = orch.started[-1]
+    assert decision.cwd == triage.cwd
+    assert head(sdt, decision.cwd) == moved_tip
+    assert not (decision.cwd / "left-behind").exists(), "the previous run's leftovers survived the reset"
+
+
+def test_concurrent_runs_of_one_role_get_their_own_trees(sdt: ModuleType, orch: Any) -> None:
+    fresh = {s: sdt.BacklogItem(s, orch.p.backlog / f"{s}.md", "P2", s) for s in ("P2-a", "P2-b")}
+    orch.apply_triage({"items": [{"slug": s, "action": "research", "reason": "q"} for s in fresh]}, fresh)
+    assert [r.cwd.name for r in orch.started] == ["researcher-1", "researcher-2"]
+    orch.ask_manager(orch.items["P2-a"], "BLOCKED", {})
+    orch.ask_manager(orch.items["P2-b"], "BLOCKED", {})
+    assert [r.cwd.name for r in orch.started[2:]] == ["manager-1", "manager-2"]
+
+
+def test_review_batches_run_concurrently_up_to_reviewers(sdt: ModuleType, orch: Any) -> None:
+    orch.cfg.reviewers = 2
+    for slug in ("P2-a", "P2-b", "P2-c"):
+        review_item(sdt, orch, slug)
+        orch.review_batch.append(slug)
+        orch.dispatch_reviews()
+    assert [r.cwd.name for r in orch.started] == ["reviewer-1", "reviewer-2"]
+    assert [orch.items[s].agent for s in ("P2-a", "P2-b")] == ["reviewer-1", "reviewer-2"]
+    assert orch.review_batch == ["P2-c"], "a third batch waits for a free reviewer"
+
+
+def test_only_changes_requested_counts_as_a_review_round(sdt: ModuleType, orch: Any) -> None:
+    orch.cfg.review_rounds = 1
+    it = review_item(sdt, orch, "P2-a")
+    run = SimpleNamespace(tag="P2-a", payload={"requests": [{"items": ["P2-a"]}]})
+
+    def verdict(message: str) -> Any:
+        return sdt.RunResult(True, payload={"message": message, "items": ["P2-a"], "branch": it.branch})
+
+    for _ in range(3):
+        it.enter("review")
+        orch.on_reviewer(run, verdict("REBASE-REQUIRED"))
+        assert (it.rounds, it.stage, it.pending["message"]) == (0, "queued", "REBASE")
+    orch.on_merge_clerk(run, verdict("REBASE-REQUIRED"))
+    assert (it.rounds, it.pending["message"]) == (0, "REBASE")
+    it.enter("review")
+    orch.on_reviewer(run, verdict("CHANGES-REQUESTED"))
+    assert (it.rounds, it.stage, it.pending["message"], it.deciding) == (1, "queued", "FEEDBACK", False)
+    it.enter("review")
+    orch.on_reviewer(run, verdict("CHANGES-REQUESTED"))
+    assert it.deciding and orch.started[-1].payload["event"] == "REVIEW-ROUNDS-EXCEEDED"
+
+
+def test_install_without_lockfile_runs_only_at_creation(sdt: ModuleType, tmp_path: Path) -> None:
+    installs = tmp_path / "installs"
+    project = make_project(sdt, tmp_path, f"[repo]\ninstall = 'echo ran >> {installs}'\n")
+    wt = project.ensure_detached_worktree("qa")
+    tip = commit(sdt, project.root, "moved")
+    project.reset_detached(wt, tip)
+    project.reset_detached(wt, "main")
+    assert installs.read_text().splitlines() == ["ran"]
+
+
+def test_install_reruns_when_the_lockfile_changes(sdt: ModuleType, tmp_path: Path) -> None:
+    installs = tmp_path / "installs"
+    project = make_project(sdt, tmp_path, f"[repo]\ninstall = 'echo ran >> {installs}'\nlockfile = 'deps.txt'\n")
+    commit(sdt, project.root, "deps", "v1")
+    wt = project.ensure_detached_worktree("qa")
+    project.reset_detached(wt, "main")
+    assert installs.read_text().splitlines() == ["ran"]
+    commit(sdt, project.root, "deps", "v2")
+    project.reset_detached(wt, "main")
+    assert installs.read_text().splitlines() == ["ran", "ran"]
 
 
 # ---- invariants

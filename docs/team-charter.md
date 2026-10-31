@@ -435,9 +435,14 @@ copy-pasteable rather than placeholder-laced:
 - **Worktrees:** one per item, `dev-<slug>` under the worktrees directory,
   created from the live default branch by the orchestrator before the
   Developer runs and removed by the orchestrator after the item lands (see
-  [Scoped writers](#scoped-writers-to-the-main-working-tree)). The persistent
-  `reviewer-<n>`, `merge-clerk` and `qa` worktrees are detached and reset to a
-  known-clean state before every run.
+  [Scoped writers](#scoped-writers-to-the-main-working-tree)). Every other
+  role works in a persistent detached worktree, reset to a known-clean state
+  before every run: `reviewer-<n>` (one per `[limits] reviewers` instance),
+  `merge-clerk`, `qa` (the full gate and the QA role), `consistency-check`,
+  `manager-<n>` and `researcher-<n>`; an ad-hoc `sdt role <name>` run defaults
+  to `scratch-<name>`. `sdt run` gives each concurrent run of a role its own
+  `<n>` tree and never resets a tree a live run works in. The Manager,
+  Researcher and consistency check start at the current default-branch tip.
 - **Landing:** fast-forward only, one commit per item, linear history.
 
 A project may override the directory and the branch prefix in its
@@ -581,7 +586,7 @@ by the orchestrator; any message may carry `notes_for_next_run`.
 | Orchestrator → Developer | `IMPLEMENT` | `{items[{slug, path, text}], branch, worktree, base, adopt, ports, governing_docs[], guards[], sharpen_first, scoped_gate[], resume?}` — `resume` carries `FEEDBACK {comments[], required[]}`, `REBASE {onto}`, `RETRY {reason}` or `ADOPT {reason}` |
 | Developer → Orchestrator | `READY-FOR-REVIEW` | `{items[], branch, worktree, head, rebased_onto, single_commit, verification[{cmd, result}], ports_used, notes}` |
 | Developer → Orchestrator | `BLOCKED` | `{item, branch, worktree, reason, needs}` |
-| Orchestrator → Reviewer | `REVIEW-REQUEST` | `{requests[{items[], item_text, branch, worktree, head, verification[], ports, notes}], base, reviewer_worktree, scoped_gate[]}` — every READY item waiting when the Reviewer is free, in one batch |
+| Orchestrator → Reviewer | `REVIEW-REQUEST` | `{requests[{items[], item_text, branch, worktree, head, verification[], ports, notes}], base, reviewer_worktree, scoped_gate[]}` — every READY item waiting when a Reviewer instance is free, in one batch |
 | Reviewer → Orchestrator | `REVIEW-VERDICTS` | `{verdicts[]}`, one per request: `APPROVED {items[], branch, head, verification[], notes}` (each grouped item reviewed individually) / `CHANGES-REQUESTED {items[], branch, comments[], required[]}` / `REBASE-REQUIRED {items[], branch, base, reason}` |
 | Orchestrator → Merge-Clerk | `MERGE-REQUEST` | `{items[], branch, head, base, scoped_gate[], guards[], item_paths[]}` |
 | Merge-Clerk → Orchestrator | `LANDABLE` | `{items[], sha, rebased, verification[]}` — the orchestrator fast-forwards the default branch to `sha` |

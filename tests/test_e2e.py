@@ -24,6 +24,7 @@ full = ["sh ./gate.sh"]
 default = "fake"
 [limits]
 max_parallel_developers = 2
+reviewers = 2
 review_rounds = 2
 [limits.timeouts]
 developer = 600
@@ -91,7 +92,7 @@ def test_doctor_ready(repo: Path) -> None:
 
 
 def test_full_pipeline(repo: Path) -> None:
-    proc = run_sdt(repo, "run", "--label", "e2e")
+    proc = run_sdt(repo, "run", "--label", "e2e", env_extra={"FAKE_REVIEW_WAIT_SECONDS": "10"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     final = json.loads(proc.stdout.strip().splitlines()[-1])
     assert final["message"] == "DRAINED"
@@ -135,6 +136,7 @@ def test_full_pipeline(repo: Path) -> None:
     landed = {"P1-plain", "P2-twice", "P3-group-a", "P1-red-item"}
     assert not any(n.removeprefix("dev-") in landed for n in names), names
     assert "dev-P2-dev-blocks" in names
+    assert {"reviewer-1", "reviewer-2"} <= names, "two review batches ran concurrently"
     branches = set(git("branch", "--list", "item/*", "--format=%(refname:short)", cwd=repo).splitlines())
     assert branches == {"item/P2-dev-blocks"}, branches
     assert git("status", "--porcelain", cwd=repo) == ""

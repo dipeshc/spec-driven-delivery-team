@@ -834,6 +834,11 @@ class Project:
         self.install_in(path)
 
     def install_in(self, path: Path, force: bool = False) -> None:
+        """Run `install` in a fresh worktree (`force`), or in a persistent one whose lockfile changed.
+
+        With no lockfile configured the recorded digest is empty and never changes,
+        so a persistent worktree installs only when it is created.
+        """
         if not self.cfg.install:
             return
         marker = self.runs_dir / f"install-{path.name}.hash"
@@ -842,7 +847,7 @@ class Project:
             lock = path / self.cfg.lockfile
             if lock.is_file():
                 digest = hashlib.sha256(lock.read_bytes()).hexdigest()
-        if not force and marker.is_file() and marker.read_text() == digest and digest:
+        if not force and marker.is_file() and marker.read_text() == digest:
             return
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         proc = sh(self.cfg.install, path, timeout=self.cfg.timeout_for("qa_gate"))
@@ -1176,6 +1181,28 @@ class Orchestrator:
             if not page.exists():
                 shutil.copy(FRAMEWORK_ROOT / "assets" / "dashboard.html", page)
 
+    # -- role worktrees
+
+    def role_worktree(self, name: str, ref: str) -> Path | None:
+        """The persistent detached worktree `name`, reset to `ref` for the next run.
+
+        None while a live run has it as its cwd: resetting a tree under a run
+        would pull its checkout away mid-task, so the caller waits a tick instead.
+        """
+        path = self.p.worktree_path(name)
+        if any(r.cwd == path for r in self.runs):
+            return None
+        self.p.ensure_detached_worktree(name)
+        self.p.reset_detached(path, ref)
+        return path
+
+    def pooled_worktree(self, role: str, ref: str) -> Path:
+        """The first `<role>-<n>` worktree no live run works in, reset to `ref`: one tree per concurrent run."""
+        n = 1
+        while (path := self.role_worktree(f"{role}-{n}", ref)) is None:
+            n += 1
+        return path
+
     # -- intake
 
     def intake(self) -> None:
@@ -1203,7 +1230,8 @@ class Orchestrator:
             "engine_network": self.p.adapter(self.cfg.engine_for("developer")).network,
         }
         self.manager_busy = True
-        self.start(self.p.start_run("manager", payload, cwd=self.p.ensure_detached_worktree("manager"), tag="triage"))
+        wt = self.pooled_worktree("manager", self.p.branch)
+        self.start(self.p.start_run("manager", payload, cwd=wt, tag="triage"))
 
     def apply_triage(self, payload: dict[str, Any], fresh: dict[str, BacklogItem]) -> None:
         decisions = payload.get("items", [])
@@ -1259,7 +1287,7 @@ class Orchestrator:
                             "question": str(d.get("reason", "")),
                             "item_text": fresh[slug].text,
                         },
-                        cwd=self.p.ensure_detached_worktree("researcher"),
+                        cwd=self.pooled_worktree("researcher", self.p.branch),
                         tag=slug,
                     )
                 )
@@ -1447,7 +1475,8 @@ class Orchestrator:
         it.enter("queued", f"awaiting decision: {event}")
         it.note = f"deciding: {event}"
         it.deciding = True
-        self.start(self.p.start_run("manager", payload, cwd=self.p.ensure_detached_worktree("manager"), tag=it.slug))
+        wt = self.pooled_worktree("manager", self.p.branch)
+        self.start(self.p.start_run("manager", payload, cwd=wt, tag=it.slug))
 
     def park(self, it: Item, reason: str) -> None:
         """Move every file of the item into blocked/; one the owner moves back is re-triaged."""
@@ -1501,14 +1530,13 @@ class Orchestrator:
             self.ask_manager(it, "UNEXPECTED-PAYLOAD", res.payload)
 
     def dispatch_reviews(self) -> None:
-        if not self.review_batch or any(r.role.name == "reviewer" for r in self.runs):
+        if not self.review_batch or sum(1 for r in self.runs if r.role.name == "reviewer") >= self.cfg.reviewers:
             return
         batch = [self.items[s] for s in self.review_batch if s in self.items and self.items[s].stage == "review"]
         self.review_batch = []
         if not batch:
             return
-        wt = self.p.ensure_detached_worktree("reviewer-1")
-        self.p.reset_detached(wt, batch[0].branch)
+        wt = self.pooled_worktree("reviewer", batch[0].branch)
         requests = []
         for it in batch:
             ready = it.pending.get("ready", {})
@@ -1524,7 +1552,7 @@ class Orchestrator:
                     "notes": ready.get("notes", ""),
                 }
             )
-            it.agent, it.model = "reviewer-1", ""
+            it.agent, it.model = wt.name, ""
         payload = {
             "message": "REVIEW-REQUEST",
             "requests": requests,
@@ -1572,10 +1600,12 @@ class Orchestrator:
                 it.enter("landing", "APPROVED")
                 self.event("approved", it.slug)
             elif msg in ("CHANGES-REQUESTED", "REBASE-REQUIRED"):
-                it.rounds += 1
-                if it.rounds > self.cfg.review_rounds:
-                    self.ask_manager(it, "REVIEW-ROUNDS-EXCEEDED", v)
-                    continue
+                # Only a review objection is a round; a base that moved under the item is not.
+                if msg == "CHANGES-REQUESTED":
+                    it.rounds += 1
+                    if it.rounds > self.cfg.review_rounds:
+                        self.ask_manager(it, "REVIEW-ROUNDS-EXCEEDED", v)
+                        continue
                 it.pending = {
                     "message": "FEEDBACK" if msg == "CHANGES-REQUESTED" else "REBASE",
                     "comments": v.get("comments", []),
@@ -1589,13 +1619,12 @@ class Orchestrator:
                 self.ask_manager(it, "UNEXPECTED-VERDICT", v)
 
     def dispatch_landing(self) -> None:
-        if any(r.role.name == "merge-clerk" for r in self.runs):
-            return
         it = next((i for i in self.items.values() if i.stage == "landing" and not i.pending.get("landing")), None)
         if it is None:
             return
-        wt = self.p.ensure_detached_worktree("merge-clerk")
-        self.p.reset_detached(wt, self.p.branch)
+        wt = self.role_worktree("merge-clerk", self.p.branch)
+        if wt is None:
+            return
         payload = {
             "message": "MERGE-REQUEST",
             "items": it.slugs,
@@ -1653,7 +1682,6 @@ class Orchestrator:
                 if other.stage == "review" and other.slug != it.slug:
                     other.note = "base moved; reviewer will see the rebase need"
         elif msg == "REBASE-REQUIRED":
-            it.rounds += 1
             it.pending = {"message": "REBASE", "onto": self.p.branch, "reason": res.payload.get("reason", "")}
             it.enter("queued", "REBASE-REQUIRED by merge-clerk")
         else:
@@ -1674,21 +1702,23 @@ class Orchestrator:
 
     def run_qa_gate(self) -> None:
         self.queue_outside_tip()
-        if not self.qa_pending_tip or self.qa_state == "gating" or any(r.role.name == "qa" for r in self.runs):
+        if not self.qa_pending_tip or self.qa_state == "gating":
             return
         if self.cfg.ports_exclusive and self.ports_held():
             self.qa_state = "waiting for the exclusive-resource slot"
             return
         tip = self.qa_pending_tip
-        self.qa_pending_tip = ""
         if not self.cfg.gate_full:
+            self.qa_pending_tip = ""
             self.qa_green_tip = tip
             self.qa_state = f"no full gate configured; {tip[:8]} unverified"
             return
+        wt = self.role_worktree("qa", tip)
+        if wt is None:
+            return
+        self.qa_pending_tip = ""
         self.qa_state = "gating"
         self.write_ledger()
-        wt = self.p.ensure_detached_worktree("qa")
-        self.p.reset_detached(wt, tip)
         log_path = self.p.runs_dir / f"qa-gate-{tip[:8]}.log"
         ok, failures = self.p.run_full_gate(wt, log_path)
         if ok:
@@ -1760,14 +1790,16 @@ class Orchestrator:
         self.housekeep("file regression", file_them)
 
     def run_consistency(self) -> None:
-        if not self.consistency_due or any(r.role.name == "consistency-check" for r in self.runs):
+        if not self.consistency_due:
             return
-        self.consistency_due = False
         if not (ROLES_DIR / "consistency-check.md").is_file():
+            self.consistency_due = False
             self.event("warning", "no consistency-check role shipped; cadence skipped")
             return
-        wt = self.p.ensure_detached_worktree("qa")
-        self.p.reset_detached(wt, self.p.branch)
+        wt = self.role_worktree("consistency-check", self.p.branch)
+        if wt is None:
+            return
+        self.consistency_due = False
         self.start(
             self.p.start_run(
                 "consistency-check", {"message": "RUN-CONSISTENCY", "tip": self.p.tip()}, cwd=wt, tag="cadence"
