@@ -226,6 +226,7 @@ class Adapter:
     add_dir_style: str
     prompt: str
     stdin_args: list[str]
+    prompt_args: list[str]
     output: str
     success_key: str
     success_value: str
@@ -281,6 +282,9 @@ class Adapter:
                 for d in dirs:
                     argv += [self.add_dir_flag, d]
         if self.prompt == "arg":
+            # A CLI whose prompt flag consumes the next token gets it last, so
+            # no other flag can be mistaken for the prompt.
+            argv += [sub(a) for a in self.prompt_args]
             argv.append(prompt_file.read_text())
         else:
             argv += [sub(a) for a in self.stdin_args]
@@ -326,6 +330,7 @@ def load_adapter(name: str, dirs: list[Path]) -> Adapter:
         add_dir_style=style,
         prompt=str(data.get("prompt", "stdin")),
         stdin_args=[str(a) for a in data.get("stdin_args", [])],
+        prompt_args=[str(a) for a in data.get("prompt_args", [])],
         output=output,
         success_key=str(success.get("key", "")),
         success_value=str(success.get("value", "")),

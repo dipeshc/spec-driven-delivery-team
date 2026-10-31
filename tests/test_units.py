@@ -47,13 +47,16 @@ def test_shipped_adapters_load(sdt: ModuleType, name: str, tmp_path: Path) -> No
     adapter = sdt.load_adapter(name, [ROOT / "adapters"])
     assert adapter.name == name
     assert adapter.command
-    assert adapter.tested == (name in {"claude", "gemini"}), "only engines exercised for real are marked tested"
+    assert adapter.tested == (name in {"claude"}), "only engines exercised for real are marked tested"
     prompt = tmp_path / "p"
     prompt.write_text("PROMPT")
     argv = adapter.render(model="m", cwd=tmp_path, add_dirs=[Path("/g")], out=tmp_path / "o", prompt_file=prompt)
     assert argv[0] == adapter.executable
     if adapter.prompt == "arg":
         assert argv[-1] == "PROMPT"
+        assert argv[-2] in {*adapter.prompt_args, *adapter.command, "/g", "m"}, "the prompt is the last token"
+        for flag in ("-p", "--print"):
+            assert flag not in adapter.command, f"{flag} would swallow the next flag; put it in prompt_args"
 
 
 def test_render_claude(sdt: ModuleType, tmp_path: Path) -> None:

@@ -13,10 +13,11 @@ tested = false
 network = true
 vision = false
 
-command = ["agent", "-p", "--force", "--output-format", "text", "--workspace", "{cwd}"]
+command = ["agent", "--force", "--output-format", "text", "--workspace", "{cwd}"]
 model_args = ["--model", "{model}"]
 add_dir = { flag = "", style = "repeat" }
 prompt = "arg"
+prompt_args = ["-p"]
 stdin_args = []
 output = "text"
 timeout_exit_codes = []

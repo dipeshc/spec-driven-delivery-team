@@ -1,0 +1,30 @@
+# Engine adapter: Antigravity CLI (`agy`). Launch and output shape verified by
+# hand; marked tested once a full role run has completed on it.
+#
+# Print mode takes the prompt as the value of `--print`, so that flag goes
+# last with the prompt behind it. Approvals are bypassed because the run is
+# confined by its working directory plus the explicit add-dirs; the
+# orchestrator enforces the wall-clock timeout, so the CLI's own print timeout
+# is left unlimited. The final message is the `response` key of the JSON
+# object on stdout, valid only when `status` is `SUCCESS`.
+name = "agy"
+tested = false
+network = true
+vision = false
+
+command = ["agy", "--output-format", "json", "--dangerously-skip-permissions", "--print-timeout", "0s"]
+model_args = ["--model", "{model}"]
+add_dir = { flag = "--add-dir", style = "repeat" }
+prompt = "arg"
+prompt_args = ["--print"]
+stdin_args = []
+output = "json:response"
+success = { key = "status", value = "SUCCESS" }
+timeout_exit_codes = []
+
+# Names from `agy models`; the suffix is the reasoning effort. Override in
+# config.toml [engine.tiers] to run a different family (e.g. claude-opus-5-5-high).
+[tiers]
+frontier = "gemini-4-argon-high"
+mid = "gemini-4-argon-medium"
+small = "gemini-3.8-flash-medium"

@@ -1,11 +1,12 @@
-# Engine adapter: Gemini CLI (`gemini -p`). Tested.
+# Engine adapter: Gemini CLI (`gemini -p`). Launch verified (flags accepted);
+# no role run has completed on it yet, so it is not marked tested.
 #
 # `-p ""` selects headless mode; the prompt arrives on stdin and the empty
 # prompt is appended to it. `--skip-trust` avoids the fatal untrusted-workspace
 # error in a fresh worktree. Exit code 53 is the engine's own turn limit and is
 # treated as a timeout.
 name = "gemini"
-tested = true
+tested = false
 network = true
 vision = true
 

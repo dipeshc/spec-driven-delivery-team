@@ -17,6 +17,7 @@ command = ["opencode", "run", "--auto", "--dir", "{cwd}"]
 model_args = ["-m", "{model}"]
 add_dir = { flag = "", style = "repeat" }
 prompt = "arg"
+prompt_args = []
 stdin_args = []
 output = "text"
 timeout_exit_codes = []
