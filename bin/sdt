@@ -1081,6 +1081,8 @@ class Item:
     deciding: bool = False
     held: bool = False
     parked: bool = False
+    # Research deleted its file without a merge: closed, but never `done` and never on the board.
+    retired: bool = False
 
     def enter(self, stage: str, text: str = "") -> None:
         self.stage = stage
@@ -1159,6 +1161,8 @@ class Orchestrator:
         agents.append(qa_row)
         items = []
         for it in self.items.values():
+            if it.retired:
+                continue
             row: dict[str, Any] = {
                 "slug": it.slug,
                 "priority": it.priority if len(it.slugs) == 1 else f"{it.priority} ×{len(it.slugs)}",
@@ -1195,7 +1199,8 @@ class Orchestrator:
     def summary_line(self) -> str:
         counts = {s: 0 for s in STAGES}
         for it in self.items.values():
-            counts[it.stage] += 1
+            if not it.retired:
+                counts[it.stage] += 1
         parts = [f"{n} {s}" for s, n in counts.items() if n]
         return ", ".join(parts) or "no items"
 
@@ -1285,7 +1290,7 @@ class Orchestrator:
         in_flight = [
             {"slug": it.slug, "stage": it.stage, "branch": it.branch, "ports": it.ports}
             for it in self.items.values()
-            if not sent & set(it.slugs)
+            if not it.retired and not sent & set(it.slugs)
         ]
         payload = {
             "message": "TRIAGE-REQUEST",
@@ -1879,7 +1884,7 @@ class Orchestrator:
         if not slug:
             return True
         item = self.items.get(slug)
-        return item is None or item.stage not in ("done", "blocked")
+        return item is None or not (item.retired or item.stage in ("done", "blocked"))
 
     def on_qa(self, run: RoleRun, res: RunResult) -> None:
         tip = str(run.payload.get("tip", ""))
@@ -2002,7 +2007,7 @@ class Orchestrator:
                 body = f"Research found no item to file.\n\nFinding: {finding}\n\nWhy: {why}"
                 it.note = f"researched; no item: {finding}"
             self.p.retire_items([self.p.root / rel for rel in it.paths], subject, body)
-            it.enter("done", f"retired by research ({message})")
+            it.retired = True
             self.event("research", f"{it.slug}: {message}; {it.note}")
 
         self.housekeep(f"research {it.slug}", apply)
@@ -2044,7 +2049,7 @@ class Orchestrator:
             or self.deferred_runs
         ):
             return False
-        open_items = [it for it in self.items.values() if it.stage not in ("done", "blocked")]
+        open_items = [it for it in self.items.values() if not it.retired and it.stage not in ("done", "blocked")]
         return not open_items
 
     def run(self) -> int:
@@ -2066,7 +2071,7 @@ class Orchestrator:
             self.write_ledger()
             (self.p.runs_dir / "sdt.pid").unlink(missing_ok=True)
             return 130
-        blocked = [it.slug for it in self.items.values() if it.stage == "blocked"]
+        blocked = [it.slug for it in self.items.values() if it.stage == "blocked" and not it.retired]
         self.event("drained", f"{self.merges} landed, {len(blocked)} blocked")
         self.write_ledger()
         (self.p.runs_dir / "sdt.pid").unlink(missing_ok=True)

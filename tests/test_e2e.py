@@ -260,9 +260,9 @@ def test_qa_blocked_reason_is_surfaced(tmp_path: Path) -> None:
 
 
 def test_research_failure_blocks_and_no_item_retires(tmp_path: Path) -> None:
-    repo = make_repo(tmp_path, ["P2-research-fails", "P2-research-dissolves"])
+    repo = make_repo(tmp_path, ["P2-research-fails", "P2-research-dissolves", "P2-plain"])
     final = drained(run_sdt(repo, "run"))
-    assert final["landed"] == 0
+    assert final["landed"] == 1
     assert final["blocked"] == ["P2-research-fails"]
     backlog = repo / "docs" / "backlog"
 
@@ -280,6 +280,12 @@ def test_research_failure_blocks_and_no_item_retires(tmp_path: Path) -> None:
     assert message.startswith("chore(backlog): retire P2-research-dissolves — already true")
     assert "Finding: already true: src/ has the behaviour" in message and "Why: nothing to change" in message
     assert git("show", "--no-show-signature", "--name-status", "--format=", sha, cwd=repo) == f"D\t{rel}"
+
+    # a retired item is closed without landing: the board counts only what DRAINED counts as landed
+    state = json.loads((repo / ".delivery-team" / "progress" / "state.json").read_text())
+    done = [it["slug"] for it in state["items"] if it["stage"] == "done"]
+    assert len(done) == final["landed"], state["items"]
+    assert "P2-research-dissolves" not in done
 
 
 def test_failed_consistency_check_is_retried_then_reported(tmp_path: Path) -> None:

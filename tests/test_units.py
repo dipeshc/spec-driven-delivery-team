@@ -680,6 +680,28 @@ def test_concurrent_runs_of_one_role_get_their_own_trees(sdt: ModuleType, orch: 
     assert [r.cwd.name for r in orch.started[2:]] == ["manager-1", "manager-2"]
 
 
+def test_research_retired_regression_is_closed_but_never_done(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slug = "P0-regression-gate"
+    orch, _ = triage_orchestrator(sdt, tmp_path, monkeypatch, [slug])
+    orch.open_regressions["gate"] = slug
+    path = orch.p.backlog / f"{slug}.md"
+    fresh = {slug: sdt.BacklogItem(slug, path, "P0", path.read_text())}
+    orch.apply_triage({"items": [{"slug": slug, "action": "research", "reason": "q"}]}, fresh)
+    (research,) = orch.runs
+    orch.runs.remove(research)
+    orch.on_researcher(research, sdt.RunResult(True, payload={"message": "NO-ITEM", "finding": "f", "why": "w"}))
+    assert not path.exists()
+    assert orch.items[slug].stage != "done", "only a merging commit marks an item done"
+    assert not orch.regression_open("gate"), "the next red with the same failures must reach QA again"
+    assert orch.drained(), "a retired item held the run open"
+    monkeypatch.setattr(orch.cfg, "board_enabled", True)
+    orch.write_ledger()
+    state = json.loads((orch.p.board_dir / "state.json").read_text())
+    assert state["items"] == [], "a retired item is on the board"
+
+
 def test_review_batches_run_concurrently_up_to_reviewers(sdt: ModuleType, orch: Any) -> None:
     orch.cfg.reviewers = 2
     for slug in ("P2-a", "P2-b", "P2-c"):
