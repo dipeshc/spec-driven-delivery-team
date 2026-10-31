@@ -720,7 +720,10 @@ class Project:
         chosen_tier = tier or role.tier
         model = adapter.model_for(chosen_tier, self.cfg.engine_tiers)
         prompt = build_prompt(role, self.run_context(role, cwd, context_extra), payload, self.notes_for(role_name))
-        run_id = f"{int(time.time() * 1000)}-{role_name}" + (f"-{tag}" if tag else "")
+        # A run id names files under runs/; a long tag (a review batch of many
+        # slugs) must not push it past the filesystem's name limit.
+        short_tag = tag if len(tag) <= 60 else tag[:48] + "-" + hashlib.sha256(tag.encode()).hexdigest()[:8]
+        run_id = f"{int(time.time() * 1000)}-{role_name}" + (f"-{short_tag}" if short_tag else "")
         add_dirs = [self.git_common, *(extra_dirs or [])]
         self.ensure_dirs()
         log(f"start {role_name} on {adapter.name}/{model or 'default'} in {cwd.name} ({run_id})")
@@ -1516,7 +1519,7 @@ class Orchestrator:
         self.start(run)
 
     def on_reviewer(self, run: RoleRun, res: RunResult) -> None:
-        slugs = run.tag.split("+")
+        slugs = [str(r.get("items", [""])[0]) for r in run.payload.get("requests", []) if isinstance(r, dict)]
         batch = [self.items[s] for s in slugs if s in self.items]
         if not res.ok:
             self.event("error", f"reviewer run failed ({res.error}); re-dispatching the batch")

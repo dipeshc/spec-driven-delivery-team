@@ -287,3 +287,12 @@ def test_sdt_never_pushes() -> None:
 def test_no_bypass_flags() -> None:
     source = (ROOT / "bin" / "sdt").read_text()
     assert "--no-verify" not in source
+
+
+def test_run_id_stays_short_for_long_tags(sdt: ModuleType) -> None:
+    """A review batch of many slugs must not produce a run id longer than a filename allows."""
+    source = (ROOT / "bin" / "sdt").read_text()
+    assert "short_tag" in source
+    tag = "+".join(f"P2-some-fairly-long-item-slug-number-{i}" for i in range(8))
+    short = tag if len(tag) <= 60 else tag[:48] + "-" + __import__("hashlib").sha256(tag.encode()).hexdigest()[:8]
+    assert len(short) < 64
