@@ -163,6 +163,16 @@ def test_held_item_waits_for_what_it_waits_on(tmp_path: Path) -> None:
     assert proc.stdout.count("dispatch: P2-held") == 1
 
 
+def test_role_keeps_notes_and_sends_run_consistency(repo: Path) -> None:
+    proc = run_sdt(repo, "role", "consistency-check", "--file-items")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout[proc.stdout.index("{") :])
+    assert result["received"]["message"] == "RUN-CONSISTENCY"
+    assert result["received"]["tip"] == git("rev-parse", "main", cwd=repo)
+    notes = repo / ".delivery-team" / "notes" / "consistency-check.md"
+    assert "audited up to stub-marker" in notes.read_text()
+
+
 def test_status_without_run(repo: Path) -> None:
     proc = run_sdt(repo, "status")
     assert proc.returncode == 0

@@ -2120,7 +2120,11 @@ def cmd_role(args: argparse.Namespace) -> int:
         payload = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError as exc:
         raise SdtError(f"payload is not JSON: {exc}") from None
-    payload.setdefault("message", f"{args.name.upper()}-REQUEST")
+    if args.name == "consistency-check":
+        payload.setdefault("message", "RUN-CONSISTENCY")
+        payload.setdefault("tip", project.tip())
+    else:
+        payload.setdefault("message", f"{args.name.upper()}-REQUEST")
     if args.cwd:
         cwd = Path(args.cwd).resolve()
     else:
@@ -2133,6 +2137,8 @@ def cmd_role(args: argparse.Namespace) -> int:
     if not res.ok:
         print(json.dumps({"message": "RUN-FAILED", "error": res.error, "log": str(res.log_path)}))
         return 1
+    if isinstance(res.payload.get("notes_for_next_run"), str):
+        project.append_notes(args.name, res.payload["notes_for_next_run"])
     if args.file_items and isinstance(res.payload.get("items"), list):
         filed = project.file_items([i for i in res.payload["items"] if isinstance(i, dict)], f"{args.name} run")
         res.payload["filed"] = filed

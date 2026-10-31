@@ -80,7 +80,9 @@ def main() -> int:
         )
         return 0
     if role == "consistency-check":
-        reply({"message": "FINDINGS", "items": []})
+        reply(
+            {"message": "FINDINGS", "items": [], "received": payload, "notes_for_next_run": "audited up to stub-marker"}
+        )
         return 0
     if role == "researcher":
         slug = payload.get("item", "x")

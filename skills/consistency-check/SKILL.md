@@ -20,17 +20,9 @@ worktree and files what it returns:
 sdt role consistency-check --file-items
 ```
 
-Optionally narrow the pass with a payload, which the role treats as its audit
-range:
-
-```
-sdt role consistency-check --file-items --payload '{"range": "<sha>..<default-branch>", "focus": "docs/architecture.md"}'
-```
-
 The role keeps its audit marker and dismissed judgment calls in its notes file
-(`.delivery-team/notes/consistency-check.md`), so each pass is incremental
-unless the payload says otherwise. The command prints the role's `FINDINGS`
-result — the range audited, anything left unverified, and the items filed —
+(`.delivery-team/notes/consistency-check.md`), so each pass is incremental. The command prints the role's
+`FINDINGS` result — the range audited, anything left unverified, and the items filed —
 which you relay to the user. **You fix nothing and file nothing yourself**: a
 finding becomes a backlog item that a Developer lands through review, like any
 other change.
