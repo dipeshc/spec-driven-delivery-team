@@ -91,6 +91,25 @@ def test_doctor_ready(repo: Path) -> None:
     assert "ready" in proc.stdout
 
 
+def test_unrunnable_per_role_engine_blocks_preflight(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, ["P1-plain"])
+    config = repo / ".delivery-team" / "config.toml"
+    config.write_text(CONFIG.replace('default = "fake"\n', 'default = "fake"\n[engine.roles]\ndeveloper = "ghost"\n'))
+    adapters = repo / ".delivery-team" / "adapters"
+    adapters.mkdir()
+    (adapters / "ghost.toml").write_text('name = "ghost"\ntested = true\ncommand = ["ghost-cli-not-on-path"]\n')
+
+    proc = run_sdt(repo, "doctor")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "engines: fake, ghost" in proc.stdout
+    assert "'ghost-cli-not-on-path' is not on PATH" in proc.stdout and "not ready" in proc.stdout
+
+    proc = run_sdt(repo, "run")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "MUTATIONS-BLOCKED" in proc.stderr and "ghost-cli-not-on-path" in proc.stderr
+    assert not list((repo / ".delivery-team" / "runs").glob("*.prompt.md")), "nothing was dispatched"
+
+
 def test_full_pipeline(repo: Path) -> None:
     proc = run_sdt(repo, "run", "--label", "e2e", env_extra={"FAKE_REVIEW_WAIT_SECONDS": "10"})
     assert proc.returncode == 0, proc.stdout + proc.stderr

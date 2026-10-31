@@ -12,7 +12,6 @@ description: >
 tier: frontier
 access: write
 vision: true
-engines: [claude, gemini]
 ---
 
 You are the **UI inspector**. You find the bugs that are invisible in source

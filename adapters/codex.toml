@@ -1,16 +1,19 @@
 # Engine adapter: OpenAI Codex CLI (`codex exec`). Contract-tested; real runs
 # need the CLI installed.
 #
-# `workspace-write` makes the working directory writable. A git worktree's
-# `.git` file points into the main repository's git directory, which is why the
-# orchestrator always passes the git common dir as an add-dir. Codex needs a git
-# repository; `doctor` checks that.
+# Approvals and the engine's own sandbox are bypassed because the run is
+# confined by its working directory plus the explicit add-dirs, never by the
+# engine's sandbox; the orchestrator enforces the wall-clock timeout itself. A
+# git worktree's `.git` file points into the main repository's git directory,
+# which is why the orchestrator always passes the git common dir as an add-dir.
+# `codex exec` refuses to run outside a git repository; `doctor` checks that.
 name = "codex"
 tested = false
-network = false
+network = true
 vision = false
+requires_git_repo = true
 
-command = ["codex", "exec", "--sandbox", "workspace-write", "--json", "-o", "{out}", "-C", "{cwd}"]
+command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "-o", "{out}", "-C", "{cwd}"]
 model_args = ["-m", "{model}"]
 add_dir = { flag = "--add-dir", style = "repeat" }
 prompt = "stdin"

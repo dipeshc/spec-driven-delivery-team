@@ -53,6 +53,7 @@ ROLE_TIERS = {
     "exploration": "frontier",
     "ui-inspector": "frontier",
 }
+OWNER_RUN_ROLES = ("exploration", "ui-inspector")
 EVENT_CAP = 20
 BLOCKED_MARK = "⛔"
 
@@ -150,6 +151,10 @@ class Config:
     def engine_for(self, role: str) -> str:
         return self.engine_roles.get(role, self.engine_default)
 
+    def engines(self) -> list[str]:
+        """Every engine a role can be routed to: the default, then each per-role one."""
+        return list(dict.fromkeys([self.engine_default, *self.engine_roles.values()]))
+
 
 def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key, {})
@@ -236,6 +241,8 @@ class Adapter:
     network: bool
     vision: bool
     streams: bool
+    requires_git_repo: bool
+    project_hooks_file: str
     path: Path
 
     @property
@@ -341,6 +348,8 @@ def load_adapter(name: str, dirs: list[Path]) -> Adapter:
         network=bool(data.get("network", True)),
         vision=bool(data.get("vision", False)),
         streams=bool(data.get("streams", False)),
+        requires_git_repo=bool(data.get("requires_git_repo", False)),
+        project_hooks_file=str(data.get("project_hooks_file", "")),
         path=path,
     )
 
@@ -568,6 +577,8 @@ class RoleRun:
         self._last_size = 0
         self._last_growth = self.started
         self.killed_for = ""
+        self.launch_error = ""
+        self.proc: subprocess.Popen[str] | None = None
         # The prompt is fed from the file rather than a pipe so a large prompt
         # can never deadlock against an engine that reads stdin late.
         stdin = open(self.prompt_path) if adapter.prompt == "stdin" else subprocess.DEVNULL
@@ -581,13 +592,18 @@ class RoleRun:
                 text=True,
                 start_new_session=True,
             )
+        except OSError as exc:
+            # An engine that cannot be started is a failed run for the pipeline
+            # to route, never a crash that strands the runs already in flight.
+            self.launch_error = f"engine {adapter.name} did not start: {exc}"
+            self._log.write(self.launch_error + "\n")
         finally:
             if hasattr(stdin, "close"):
                 stdin.close()
 
     def poll(self) -> bool:
         """True once the process has ended; kills it on timeout or stall."""
-        if self.proc.poll() is not None:
+        if self.proc is None or self.proc.poll() is not None:
             return True
         size = self.log_path.stat().st_size
         t = now()
@@ -602,6 +618,8 @@ class RoleRun:
         return self.proc.poll() is not None
 
     def kill(self, reason: str) -> None:
+        if self.proc is None:
+            return
         self.killed_for = reason
         try:
             os.killpg(self.proc.pid, signal.SIGTERM)
@@ -619,6 +637,8 @@ class RoleRun:
     def result(self) -> RunResult:
         self._log.close()
         seconds = now() - self.started
+        if self.proc is None:
+            return RunResult(False, error=self.launch_error, log_path=self.log_path, seconds=seconds)
         code = self.proc.returncode or 0
         stdout = self.log_path.read_text(errors="replace")
         timed_out = bool(self.killed_for) or code in self.adapter.timeout_exit_codes
@@ -1160,7 +1180,7 @@ class Orchestrator:
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
         pid_file.write_text(str(os.getpid()))
-        problems = doctor_checks(self.p, self.cfg.engine_default)
+        problems = doctor_checks(self.p)
         fatal = [m for level, m in problems if level == "error"]
         if fatal:
             raise SdtError("MUTATIONS-BLOCKED {reason: " + "; ".join(fatal) + "}")
@@ -1918,18 +1938,44 @@ class Orchestrator:
 # ---------------------------------------------------------------- doctor
 
 
-def doctor_checks(project: Project, engine: str) -> list[tuple[str, str]]:
-    """(level, message) findings; `error` blocks a run, `warn` is advisory."""
+def doctor_checks(project: Project) -> list[tuple[str, str]]:
+    """(level, message) findings over every configured engine; `error` blocks a run, `warn` is advisory."""
     out: list[tuple[str, str]] = []
     if not shutil.which("git"):
         out.append(("error", "git is not on PATH"))
     if not project.profile_path.is_file():
         out.append(("warn", f"no profile at {project.profile_path}; roles will have no project prose"))
-    try:
-        adapter = project.adapter(engine)
-    except SdtError as exc:
-        out.append(("error", str(exc)))
-        return out
+    for engine in project.cfg.engines():
+        try:
+            adapter = project.adapter(engine)
+        except SdtError as exc:
+            out.append(("error", str(exc)))
+            continue
+        out += engine_checks(project, adapter)
+    for path in sorted(ROLES_DIR.glob("*.md")):
+        role = load_role(path.stem)
+        if not role.vision:
+            continue
+        try:
+            adapter = project.adapter(project.cfg.engine_for(role.name))
+        except SdtError:
+            continue
+        if not adapter.vision:
+            # The pipeline never dispatches an owner-run role, so a mismatch there
+            # must not block a run; it is refused when the owner starts it.
+            level = "warn" if role.name in OWNER_RUN_ROLES else "error"
+            out.append((level, f"role {role.name} needs a vision-capable engine; {adapter.name} is not"))
+    for role_name in ("manager", "developer", "reviewer", "merge-clerk", "qa"):
+        if not (ROLES_DIR / f"{role_name}.md").is_file():
+            out.append(("error", f"role file missing: {ROLES_DIR / (role_name + '.md')}"))
+    if not project.cfg.gate_full:
+        out.append(("warn", "no full gate configured; QA cannot verify landings"))
+    return out
+
+
+def engine_checks(project: Project, adapter: Adapter) -> list[tuple[str, str]]:
+    """The doctor findings for one engine, driven only by what its adapter declares."""
+    out: list[tuple[str, str]] = []
     if shutil.which(adapter.executable) is None:
         out.append(("error", f"engine {adapter.name}: {adapter.executable!r} is not on PATH"))
     if not adapter.tested:
@@ -1939,21 +1985,20 @@ def doctor_checks(project: Project, engine: str) -> list[tuple[str, str]]:
         out.append(
             ("warn", f"engine {adapter.name}: no model for tier(s) {', '.join(missing)}; the engine default applies")
         )
-    if adapter.name == "claude":
-        settings = project.root / ".claude" / "settings.json"
-        if settings.is_file() and '"hooks"' in settings.read_text():
+    if adapter.project_hooks_file:
+        hooks = project.root / adapter.project_hooks_file
+        if hooks.is_file() and '"hooks"' in hooks.read_text():
             out.append(
-                ("warn", "project .claude/settings.json declares hooks; they run inside every headless role run")
+                (
+                    "warn",
+                    f"engine {adapter.name}: project {adapter.project_hooks_file} declares hooks; "
+                    "they run inside every headless role run",
+                )
             )
-    if adapter.name == "codex" and not git_ok("rev-parse", "--git-dir", cwd=project.root):
-        out.append(("error", "codex exec needs a git repository"))
+    if adapter.requires_git_repo and not git_ok("rev-parse", "--git-dir", cwd=project.root):
+        out.append(("error", f"engine {adapter.name}: needs a git repository"))
     if not adapter.network:
         out.append(("warn", f"engine {adapter.name}: no network in its sandbox; items needing ports are refused"))
-    for role_name in ("manager", "developer", "reviewer", "merge-clerk", "qa"):
-        if not (ROLES_DIR / f"{role_name}.md").is_file():
-            out.append(("error", f"role file missing: {ROLES_DIR / (role_name + '.md')}"))
-    if not project.cfg.gate_full:
-        out.append(("warn", "no full gate configured; QA cannot verify landings"))
     return out
 
 
@@ -2070,9 +2115,10 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     project = Project(Path.cwd(), [Path(d) for d in args.adapter_dir])
-    engine = args.engine or project.cfg.engine_default
-    findings = doctor_checks(project, engine)
-    print(f"repo: {project.root}\nengine: {engine}\nroles: {ROLES_DIR}")
+    if args.engine:
+        project.cfg.engine_default = args.engine
+    findings = doctor_checks(project)
+    print(f"repo: {project.root}\nengines: {', '.join(project.cfg.engines())}\nroles: {ROLES_DIR}")
     for level, msg in findings:
         print(f"{level.upper():5} {msg}")
     errors = [m for lvl, m in findings if lvl == "error"]
@@ -2090,7 +2136,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         args_text=" ".join(sys.argv[1:]),
     )
     if args.dry_run:
-        for level, msg in doctor_checks(project, orch.cfg.engine_default):
+        for level, msg in doctor_checks(project):
             print(f"{level.upper():5} {msg}")
         for b in project.scan_backlog():
             print(f"{b.priority} {b.slug}")

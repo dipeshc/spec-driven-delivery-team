@@ -330,7 +330,7 @@ window.TEAM_STATE = {
       priority: "P2",               // filename priority, or a grouped label e.g. "P0 ×2 + P1"
       stage: "review",              // ENUM: queued | implementing | review | landing | done | blocked
       agent: "reviewer-1",          // assigned role instance, or "—"
-      model: "opus",                // model of the assigned run, or "—"
+      model: "<model id>",          // model of the assigned run, or "—"
       branch: "item/some-item-slug",
       head:   "1ba9449c",           // branch tip sha (any length; the page shortens)
       stageEnteredAt: 1723644644,   // epoch seconds the item entered its current stage

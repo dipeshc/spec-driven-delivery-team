@@ -7,6 +7,9 @@ name = "claude"
 tested = true
 network = true
 vision = true
+# Claude Code runs the hooks this project settings file declares inside every
+# headless run; `sdt doctor` warns when it declares any.
+project_hooks_file = ".claude/settings.json"
 
 command = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
 model_args = ["--model", "{model}"]

@@ -41,9 +41,9 @@ default = "claude"
 # Model per capability tier, overriding the adapter's defaults. An empty value
 # omits the model flag so the engine's own default applies.
 [engine.tiers]
-# frontier = "opus"
-# mid = "sonnet"
-# small = "haiku"
+# frontier = "<model id>"
+# mid = "<model id>"
+# small = "<model id>"
 
 [limits]
 max_parallel_developers = 2

@@ -23,6 +23,12 @@ def test_config_defaults(sdt: ModuleType, tmp_path: Path) -> None:
     assert cfg.engine_for("developer") == "claude"
 
 
+def test_config_engines_cover_per_role_routes(sdt: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[engine]\ndefault = "a"\n[engine.roles]\ndeveloper = "b"\nreviewer = "a"\nqa = "b"\n')
+    assert sdt.load_config(path).engines() == ["a", "b"]
+
+
 def test_config_template_loads(sdt: ModuleType) -> None:
     cfg = sdt.load_config(ROOT / "docs" / "config.template.toml")
     assert cfg.max_parallel_developers == 2
@@ -79,6 +85,9 @@ def test_render_codex(sdt: ModuleType, tmp_path: Path) -> None:
         model="", cwd=tmp_path, add_dirs=[Path("/a"), Path("/b")], out=tmp_path / "o", prompt_file=tmp_path / "p"
     )
     assert argv[:2] == ["codex", "exec"]
+    assert "--dangerously-bypass-approvals-and-sandbox" in argv, "confinement is the orchestrator's"
+    assert "--sandbox" not in argv
+    assert adapter.network
     assert "-m" not in argv, "no model → no model flag"
     assert argv.count("--add-dir") == 2
     assert argv[-1] == "-"
@@ -95,10 +104,101 @@ def test_render_gemini(sdt: ModuleType, tmp_path: Path) -> None:
     assert 53 in adapter.timeout_exit_codes
 
 
+def test_shipped_preconditions_are_adapter_fields(sdt: ModuleType) -> None:
+    assert sdt.load_adapter("claude", [ROOT / "adapters"]).project_hooks_file == ".claude/settings.json"
+    assert sdt.load_adapter("codex", [ROOT / "adapters"]).requires_git_repo
+    assert not sdt.load_adapter("gemini", [ROOT / "adapters"]).requires_git_repo
+
+
 def test_tier_override(sdt: ModuleType) -> None:
     adapter = sdt.load_adapter("claude", [ROOT / "adapters"])
     assert adapter.model_for("mid", {}) == "sonnet"
     assert adapter.model_for("mid", {"mid": "custom"}) == "custom"
+
+
+# ---- doctor
+
+
+def test_doctor_hooks_file_from_adapter(sdt: ModuleType, tmp_path: Path) -> None:
+    project = make_project(
+        sdt,
+        tmp_path,
+        '[engine]\ndefault = "stub"\n[engine.roles]\nreviewer = "plain"\n',
+        {"stub": {"extra": 'project_hooks_file = ".stub/settings.json"'}, "plain": {}},
+    )
+    hooks = project.root / ".stub" / "settings.json"
+    hooks.parent.mkdir()
+    hooks.write_text('{"permissions": {}}')
+    assert not [m for _, m in sdt.doctor_checks(project) if "hooks" in m]
+    hooks.write_text('{"hooks": {"PreToolUse": []}}')
+    findings = [(lvl, m) for lvl, m in sdt.doctor_checks(project) if "hooks" in m]
+    assert findings == [
+        ("warn", "engine stub: project .stub/settings.json declares hooks; they run inside every headless role run")
+    ], "only the adapter that declares the file reports it"
+
+
+def test_doctor_git_repo_from_adapter(sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = make_project(
+        sdt,
+        tmp_path,
+        '[engine]\ndefault = "stub"\n[engine.roles]\nreviewer = "plain"\n',
+        {"stub": {"extra": "requires_git_repo = true"}, "plain": {}},
+    )
+    assert not [m for lvl, m in sdt.doctor_checks(project) if lvl == "error"]
+    monkeypatch.setattr(sdt, "git_ok", lambda *args, **kwargs: False)
+    errors = [m for lvl, m in sdt.doctor_checks(project) if lvl == "error"]
+    assert errors == ["engine stub: needs a git repository"]
+
+
+def test_doctor_checks_every_configured_engine(sdt: ModuleType, tmp_path: Path) -> None:
+    project = make_project(
+        sdt,
+        tmp_path,
+        '[engine]\ndefault = "stub"\n[engine.roles]\ndeveloper = "ghost"\nreviewer = "nope"\n',
+        {"stub": {}, "ghost": {"command": "ghost-cli-not-on-path"}},
+    )
+    errors = [m for lvl, m in sdt.doctor_checks(project) if lvl == "error"]
+    assert "engine ghost: 'ghost-cli-not-on-path' is not on PATH" in errors
+    assert any("no adapter named 'nope'" in m for m in errors), errors
+    project.cfg.engine_default = "ghost"
+    assert project.cfg.engines() == ["ghost", "nope"], "an --engine override replaces the default"
+
+
+def test_doctor_checks_role_vision_against_its_engine(sdt: ModuleType, tmp_path: Path) -> None:
+    project = make_project(sdt, tmp_path, '[engine]\ndefault = "stub"\n', {"stub": {}, "seer": {"vision": "true"}})
+    findings = [(lvl, m) for lvl, m in sdt.doctor_checks(project) if "vision" in m]
+    assert findings == [("warn", "role ui-inspector needs a vision-capable engine; stub is not")], (
+        "an owner-run role never blocks a pipeline run"
+    )
+    project.cfg.engine_roles["ui-inspector"] = "seer"
+    assert not [m for _, m in sdt.doctor_checks(project) if "vision" in m]
+
+
+# ---- role runs
+
+
+def test_unstartable_engine_is_a_failed_run(sdt: ModuleType, tmp_path: Path) -> None:
+    (tmp_path / "ghost.toml").write_text('command = ["ghost-cli-not-on-path"]\n')
+    adapter = sdt.load_adapter("ghost", [tmp_path])
+    role = sdt.Role(name="developer", tier="mid", access="write", vision=False, engines=[], body="BODY\n")
+    run = sdt.RoleRun(
+        run_id="r1",
+        role=role,
+        adapter=adapter,
+        model="",
+        cwd=tmp_path,
+        add_dirs=[],
+        prompt="PROMPT",
+        runs_dir=tmp_path,
+        timeout=60,
+        stall=60,
+        payload={},
+    )
+    assert run.poll()
+    run.kill("interrupted")
+    res = run.result()
+    assert not res.ok and not res.timed_out
+    assert "engine ghost did not start" in res.error and "ghost-cli-not-on-path" in res.error
 
 
 # ---- results
@@ -383,11 +483,30 @@ def test_outside_tip_racing_housekeeping_is_gated(
 # ---- role worktrees and routing
 
 
-def make_project(sdt: ModuleType, tmp_path: Path, config: str = "") -> Any:
-    """A Project on a fresh one-commit repository, its runtime dirs created."""
+STUB_ADAPTER = """
+name = "{name}"
+tested = true
+vision = {vision}
+command = ["{command}"]
+{extra}
+[tiers]
+frontier = "f"
+mid = "m"
+small = "s"
+"""
+
+
+def make_project(
+    sdt: ModuleType, tmp_path: Path, config: str = "", adapters: dict[str, dict[str, str]] | None = None
+) -> Any:
+    """A Project on a fresh one-commit repository, its runtime dirs created, a profile and stub `adapters` in place."""
     repo = tmp_path / "repo"
-    (repo / ".delivery-team").mkdir(parents=True)
+    (repo / ".delivery-team" / "adapters").mkdir(parents=True)
     (repo / ".delivery-team" / "config.toml").write_text(config)
+    (repo / ".delivery-team" / "profile.md").write_text("# Profile\n")
+    for name, fields in (adapters or {}).items():
+        values = {"name": name, "vision": "false", "command": "python3", "extra": "", **fields}
+        (repo / ".delivery-team" / "adapters" / f"{name}.toml").write_text(STUB_ADAPTER.format(**values))
     (repo / ".gitignore").write_text(".delivery-team/*\n!.delivery-team/config.toml\n")
     sdt.git("init", "-q", "-b", "main", cwd=repo)
     sdt.git("config", "user.email", "t@example.com", cwd=repo)
