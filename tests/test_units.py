@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -272,6 +273,97 @@ def test_item_moved_back_out_of_blocked_is_triaged_again(
     assert len(requests) == 2 and triaged_slugs(requests[-1]) == ["P1-a"]
     answer_triage(sdt, orch, requests[-1], [{"slug": "P1-a", "action": "dispatch"}])
     assert orch.items["P1-a"].stage == "queued" and not orch.items["P1-a"].parked
+
+
+# ---- QA gate
+
+
+def gate_orchestrator(sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[Any]]:
+    """An orchestrator whose full gate fails once `red.txt` exists; its QA dispatches are recorded, never spawned."""
+    repo = tmp_path / "repo"
+    (repo / ".delivery-team").mkdir(parents=True)
+    (repo / ".delivery-team" / "config.toml").write_text(
+        '[gate]\nfull = ["test ! -e red.txt"]\n[qa]\nknown_failures = "known-failures.txt"\n'
+    )
+    (repo / ".gitignore").write_text(".delivery-team/*\n!.delivery-team/config.toml\n")
+    sdt.git("init", "-q", "-b", "main", cwd=repo)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test"), ("commit.gpgsign", "false")):
+        sdt.git("config", key, value, cwd=repo)
+    commit_all(sdt, repo, "chore: seed")
+    orch = sdt.Orchestrator(sdt.Project(repo), engine=None, watch=False, label="t", args_text="")
+    orch.p.ensure_dirs()
+    dispatched: list[Any] = []
+    monkeypatch.setattr(orch.p, "start_run", lambda role_name, payload, **kw: payload)
+    monkeypatch.setattr(orch, "start", dispatched.append)
+    return orch, dispatched
+
+
+def land_outside(sdt: ModuleType, repo: Path, name: str) -> str:
+    """A direct-lane commit on the default branch, made behind the orchestrator's back."""
+    (repo / name).write_text(name + "\n")
+    commit_all(sdt, repo, f"feat: add {name}")
+    return str(sdt.git("rev-parse", "main", cwd=repo))
+
+
+def record_known_failure(orch: Any) -> None:
+    orch.p.record_known_failures(["no-such-output"], "test")
+
+
+def gated(orch: Any) -> set[str]:
+    return {log.stem.removeprefix("qa-gate-") for log in orch.p.runs_dir.glob("qa-gate-*.log")}
+
+
+def test_outside_tip_is_gated_and_housekeeping_is_not(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch, dispatched = gate_orchestrator(sdt, tmp_path, monkeypatch)
+    repo = orch.p.root
+    orch.tick()
+    orch.housekeep("record known failures", partial(record_known_failure, orch))
+    orch.tick()
+    assert gated(orch) == set(), "neither the opening tip nor the run's own housekeeping is gated"
+
+    green = land_outside(sdt, repo, "plain.txt")
+    orch.tick()
+    assert orch.qa_green_tip == green
+
+    outside = land_outside(sdt, repo, "outside.txt")
+    orch.housekeep("record known failures", partial(record_known_failure, orch))
+    orch.tick()
+    assert orch.qa_green_tip == outside, "a housekeeping commit stacked on an outside tip does not hide it"
+    assert gated(orch) == {green[:8], outside[:8]}
+
+    red = land_outside(sdt, repo, "red.txt")
+    orch.tick()
+    assert [payload["message"] for payload in dispatched] == ["REGRESSION-REQUEST"]
+    assert dispatched[0]["tip"] == red
+    assert dispatched[0]["last_green_tip"] == outside
+
+
+def test_outside_tip_racing_housekeeping_is_gated(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch, _ = gate_orchestrator(sdt, tmp_path, monkeypatch)
+    repo = orch.p.root
+    orch.tick()
+
+    def outside_then_housekeeping() -> None:
+        land_outside(sdt, repo, "before.txt")
+        record_known_failure(orch)
+
+    orch.housekeep("record known failures", outside_then_housekeeping)
+    stacked = str(sdt.git("rev-parse", "main", cwd=repo))
+    orch.tick()
+    assert orch.qa_green_tip == stacked, "an outside commit beneath the housekeeping commit is gated through it"
+
+    def housekeeping_then_outside() -> None:
+        record_known_failure(orch)
+        land_outside(sdt, repo, "after.txt")
+
+    orch.housekeep("record known failures", housekeeping_then_outside)
+    on_top = str(sdt.git("rev-parse", "main", cwd=repo))
+    orch.tick()
+    assert orch.qa_green_tip == on_top, "an outside commit on top of the housekeeping commit is gated"
 
 
 # ---- invariants

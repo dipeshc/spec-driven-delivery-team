@@ -584,7 +584,7 @@ by the orchestrator; any message may carry `notes_for_next_run`.
 | Orchestrator → Merge-Clerk | `MERGE-REQUEST` | `{items[], branch, head, base, scoped_gate[], guards[], item_paths[]}` |
 | Merge-Clerk → Orchestrator | `LANDABLE` | `{items[], sha, rebased, verification[]}` — the orchestrator fast-forwards the default branch to `sha` |
 | Merge-Clerk → Orchestrator | `MERGE-BLOCKED` / `REBASE-REQUIRED` | `{reason}` (surfaced immediately) / `{items[], branch, base, reason}` (the clerk's rebase hit real conflicts) |
-| Orchestrator → QA | `REGRESSION-REQUEST` | `{tip, failed_commands[], log_path, log_tail, last_green_tip}` — sent only on a **new** full-gate failure; the orchestrator runs the gate itself on every landed tip and filters the known-failures file |
+| Orchestrator → QA | `REGRESSION-REQUEST` | `{tip, failed_commands[], log_path, log_tail, last_green_tip}` — sent only on a **new** full-gate failure; the orchestrator runs the gate itself on every new tip — each sha it lands and each tip landed outside the run (the direct lane), skipping only a tip whose new commits are all its own housekeeping — and filters the known-failures file |
 | QA → Orchestrator | `REGRESSION` / `ENVIRONMENT` / `QA-BLOCKED` | `{items[{filename, body}], first_bad_sha, test}` / `{patterns[], reason}` (the orchestrator appends the patterns to the known-failures file) / `{reason}` |
 | Orchestrator → consistency check | `RUN-CONSISTENCY` | `{tip}` (trigger only; the pass's scope and audit range are the role's own) |
 | consistency check → Orchestrator | `FINDINGS` | `{items[{filename, body}]}` |

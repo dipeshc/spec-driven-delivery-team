@@ -655,6 +655,7 @@ class Project:
         if not self.git_common.is_absolute():
             self.git_common = (self.root / self.git_common).resolve()
         self._adapters: dict[str, Adapter] = {}
+        self.commits = 0
 
     # -- adapters and roles
 
@@ -864,6 +865,11 @@ class Project:
 
     # -- backlog
 
+    def commit(self, message: str, *paths: Path) -> None:
+        """Commit `paths` explicit-path in the main tree, counted so a run can tell its own commits apart."""
+        git("commit", "-q", "-m", message, "--", *map(str, paths), cwd=self.root)
+        self.commits += 1
+
     def scan_backlog(self) -> list[BacklogItem]:
         items: list[BacklogItem] = []
         if not self.backlog.is_dir():
@@ -895,15 +901,7 @@ class Project:
             git("add", "--", str(path), cwd=self.root)
             written.append(name)
         if written:
-            git(
-                "commit",
-                "-q",
-                "-m",
-                f"chore(backlog): file {len(written)} item(s) — {why}",
-                "--",
-                *[str(self.backlog / n) for n in written],
-                cwd=self.root,
-            )
+            self.commit(f"chore(backlog): file {len(written)} item(s) — {why}", *[self.backlog / n for n in written])
         return written
 
     def block_item(self, item: BacklogItem, reason: str) -> None:
@@ -913,16 +911,7 @@ class Project:
         with open(dest, "a") as fh:
             fh.write(f"\n{BLOCKED_MARK} **Blocked ({time.strftime('%Y-%m-%d')}).** {reason.strip()}\n")
         git("add", "--", str(dest), cwd=self.root)
-        git(
-            "commit",
-            "-q",
-            "-m",
-            f"chore(backlog): block {item.slug} — {reason.strip()[:60]}",
-            "--",
-            str(item.path),
-            str(dest),
-            cwd=self.root,
-        )
+        self.commit(f"chore(backlog): block {item.slug} — {reason.strip()[:60]}", item.path, dest)
 
     # -- landing
 
@@ -980,7 +969,7 @@ class Project:
             for pattern in patterns:
                 fh.write(pattern + "\n")
         git("add", "--", str(path), cwd=self.root)
-        git("commit", "-q", "-m", f"chore(qa): record known failure — {reason[:60]}", "--", str(path), cwd=self.root)
+        self.commit(f"chore(qa): record known failure — {reason[:60]}", path)
 
     def known_failure_patterns(self) -> list[str]:
         if not self.cfg.known_failures:
@@ -1055,6 +1044,10 @@ class Orchestrator:
         self.qa_state = "idle"
         self.qa_green_tip = ""
         self.qa_pending_tip = ""
+        # The newest tip already queued for the full gate or committed by the run
+        # itself. It starts at the tip the run opens on: work landed while no run
+        # was active had its full gate run by its own lander.
+        self.accounted_tip = git("rev-parse", "--verify", "--quiet", project.branch, cwd=project.root, check=False)
         self.last_backlog_sha = ""
         self.review_batch: list[str] = []
         self.manager_busy = False
@@ -1339,7 +1332,7 @@ class Orchestrator:
         if self.landing_in_flight():
             self.housekeeping.append((what, fn))
             return
-        fn()
+        self.commit_housekeeping(fn)
 
     def flush_housekeeping(self) -> None:
         if self.landing_in_flight():
@@ -1347,9 +1340,23 @@ class Orchestrator:
         pending, self.housekeeping = self.housekeeping, []
         for what, fn in pending:
             try:
-                fn()
+                self.commit_housekeeping(fn)
             except SdtError as exc:
                 self.event("error", f"housekeeping failed ({what}): {exc}")
+
+    def commit_housekeeping(self, fn: Callable[[], None]) -> None:
+        # An outside tip is queued before a commit stacks on it. The new tip is the
+        # run's own only when the commits above the accounted tip are exactly the
+        # ones `fn` made; anything that landed outside the run meanwhile leaves it
+        # unaccounted, so the next check gates it.
+        self.queue_outside_tip()
+        base, made = self.accounted_tip, self.p.commits
+        try:
+            fn()
+        finally:
+            tip = self.p.tip()
+            if git("rev-list", "--count", f"{base}..{tip}", cwd=self.p.root) == str(self.p.commits - made):
+                self.accounted_tip = tip
 
     # -- routing
 
@@ -1620,6 +1627,7 @@ class Orchestrator:
             if not removed:
                 self.event("warning", f"{it.slug}: {how}")
             self.qa_pending_tip = sha
+            self.accounted_tip = sha
             if self.cfg.consistency_every and self.merges % self.cfg.consistency_every == 0:
                 self.consistency_due = True
             for other in self.items.values():
@@ -1634,7 +1642,19 @@ class Orchestrator:
 
     # -- QA
 
+    def queue_outside_tip(self) -> None:
+        """Queue for the full gate a tip that landed outside the run (the direct lane)."""
+        tip = self.p.tip()
+        if tip == self.accounted_tip:
+            return
+        self.accounted_tip = tip
+        if tip == self.qa_green_tip:
+            return
+        self.qa_pending_tip = tip
+        self.event("qa-queued", f"{tip[:8]} holds work landed outside the run; queued for the full gate")
+
     def run_qa_gate(self) -> None:
+        self.queue_outside_tip()
         if not self.qa_pending_tip or self.qa_state == "gating" or any(r.role.name == "qa" for r in self.runs):
             return
         if self.cfg.ports_exclusive and self.ports_held():
@@ -1763,15 +1783,7 @@ class Orchestrator:
                     path = self.p.root / rel
                     if path.is_file():
                         git("rm", "-q", "--", str(path), cwd=self.p.root)
-                        git(
-                            "commit",
-                            "-q",
-                            "-m",
-                            f"chore(backlog): {slug} superseded by researched item(s)",
-                            "--",
-                            str(path),
-                            cwd=self.p.root,
-                        )
+                        self.p.commit(f"chore(backlog): {slug} superseded by researched item(s)", path)
                 it.note = f"researched; filed {', '.join(filed)}"
             self.event("research", f"{tag}: {message} {', '.join(filed)}")
 
