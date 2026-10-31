@@ -145,7 +145,7 @@ const real = survivors.filter(f => !f.mechanical)
 const rot = survivors.filter(f => f.mechanical)
 
 const filed = await agent(
-  `File these verified specification defects as backlog items, following the "What you return" section of ${map.skillPath} exactly: one item per real defect at the profile's backlog location, priority encoded in the filename, frontmatter \`by: qa (consistency-sweep)\`, and a body giving the claim, both sides quoted, the canonical resolution, and what the fix must change. Batch ALL mechanical rot into ONE low-priority item listing every instance.
+  `File these verified specification defects as backlog items, following the "What you return" section of ${map.skillPath} exactly: one item per real defect at the backlog location in \`config.toml\` \`[backlog] dir\`, priority encoded in the filename, frontmatter \`by: qa (consistency-sweep)\`, and a body giving the claim, both sides quoted, the canonical resolution, and what the fix must change. Batch ALL mechanical rot into ONE low-priority item listing every instance.
 
 Every item must satisfy the charter's item-shape contract — a stranger must be able to action it cold. **File findings; fix nothing**, not even a broken link.
 

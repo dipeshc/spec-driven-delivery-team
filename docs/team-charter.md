@@ -71,8 +71,9 @@ Not every change earns the full pipeline. Decide the lane at intake:
 
 - **Direct lane** (the default): small, single-area changes with existing test
   coverage, no security/data-model/cross-cutting implications. Investigate
-  directly, implement on a short-lived branch, run the profile's *scoped* gate
-  (plus any invariant guard the change triggers), self-review once, land. No
+  directly, implement on a short-lived branch, run the *scoped* gate
+  (`config.toml` `[gate]`, in your run context) plus any invariant guard the
+  change triggers, self-review once, land. No
   research spike, no separate reviewer, no worktree ceremony.
 - **Team lane**: auth/security/crypto, data-model or persistence changes,
   cross-package interfaces, cross-surface parity work, or multi-phase features.
@@ -174,7 +175,7 @@ adapter marked untested is best-effort, and `sdt doctor` says so.
 ## The repo's own tooling governs — never weaken a check
 
 **Run plain commands and let the repository's configuration do its job.** Agents
-run `git commit`, the profile's gate commands, and nothing more elaborate;
+run `git commit`, the config's gate commands, and nothing more elaborate;
 whatever the repo is configured to do — hooks, commit policy, formatters —
 happens as configured, invisibly to the agent. The framework requires no
 particular value for any of those settings, reports on none of them, and never
@@ -226,8 +227,8 @@ chain authorizes past it on the owner's behalf.
 
 ## Verification discipline
 
-Run the profile's **scoped** gate for a normal change and its **full** gate for
-cross-cutting work. Beyond that:
+Run the **scoped** gate (`config.toml` `[gate]`) for a normal change and its
+**full** gate for cross-cutting work. Beyond that:
 
 **Repo-wide invariant guards.** Some guards are repo-wide invariants that no
 per-package scope covers — so scoped verification silently skips them. The
@@ -275,13 +276,17 @@ returns in its result for the orchestrator to apply.
    direct-lane change (see "Route work by risk, not by habit") by
    `merge --ff-only` of a short-lived branch. One agent per item: whoever did
    the work lands it, and no one else joins the lane. The merge is earned by
-   proof, all of it before landing — the profile's *scoped* gate for the area
-   touched, every repo-wide invariant guard the change triggers, and one
-   self-review pass. An item that fails any of the three, or that outgrows the
+   proof, all of it before landing — the *scoped* gate (`config.toml`
+   `[gate]`) for the area touched, every repo-wide invariant guard the change
+   triggers, and one self-review pass. An item that fails any of the three, or that outgrows the
    lane's preconditions (single-area, small diff, existing coverage, no
    security/data-model/cross-cutting implications), escalates to the team lane
-   instead of landing. The QA full-gate run on the new tip is this lane's
-   independent verification; it is not a licence to skip the three.
+   instead of landing. While a run is active, the QA full-gate run on the new
+   tip is this lane's independent verification; it is not a licence to skip
+   the three. The orchestrator gates only tips that land while it is running,
+   and treats the tip it opens on as already accounted for. With no run
+   active, no orchestrator gate will run, so the lander runs the full gate
+   itself before calling the change done.
 3. **The orchestrator, housekeeping** — writes that touch no working code,
    every one explicit-path: backlog item files returned by the QA, Researcher
    or consistency check as `{filename, body}` pairs; moving an item to
@@ -399,9 +404,9 @@ off-pipeline (a parked item), distinct from the five pipeline stages.
 
 ## Backlog conventions
 
-Per-item files live where the project profile says, one file per item, priority
-encoded in the filename (`P0` correctness → `P3` low). Two standard
-subdirectories:
+Per-item files live where `config.toml` `[backlog] dir` says, one file per
+item, priority encoded in the filename (`P0` correctness → `P3` low). Two
+standard subdirectories:
 
 - `blocked/` — blocked on an owner decision or on environment (devices,
   credentials, live services). Waits regardless of priority.

@@ -81,7 +81,7 @@ consistency_every = 5
 
 [ports]
 # true when the gate has port-bound or exclusive-resource layers: at most one
-# item holding `ports` is then in flight from dispatch to MERGED.
+# item holding `ports` is then in flight from dispatch to landing.
 exclusive = false
 
 [worktrees]

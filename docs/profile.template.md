@@ -3,9 +3,9 @@
 Copy this file to `<repo>/.delivery-team/profile.md` and fill it in. It is the
 **prose half** of a project's configuration: what a role reads directly to
 judge its work. The machine-read half — gate commands, backlog location,
-engine, limits, worktree and board locations — lives beside it in
-`config.toml` (see `docs/config.template.toml`); the orchestrator hands those
-values to every role in its run context, so do not repeat them here.
+engine, limits, worktree locations and whether the board is enabled — lives
+beside it in `config.toml` (see `docs/config.template.toml`); the orchestrator
+hands those values to every role in its run context, so do not repeat them here.
 
 The delivery machinery (the charter, the orchestrator, the roles, the skills)
 is **generic and identical for every project**; these two files are the *only*

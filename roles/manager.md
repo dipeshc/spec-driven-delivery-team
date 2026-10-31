@@ -51,7 +51,7 @@ invariant guards with their triggers, whether exclusive resources exist
 }
 ```
 
-**`action`**, per the charter's triage rules:
+**`action`**:
 
 - **`dispatch`** — implementable and verifiable in this environment (the
   profile's Verification environment section says what can and cannot run

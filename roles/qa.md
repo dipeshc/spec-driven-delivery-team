@@ -32,8 +32,9 @@ construction, partial — it runs what the changed package covers and silently
 skips everything else, including the repo-wide invariant guards that live
 outside that package.
 
-**The full-gate run on every new tip is the independent verification that lane
-depends on.** The orchestrator runs it, every command of the full gate, on the
+**While a run is active, the full-gate run on every new tip is the independent
+verification that lane depends on.** The orchestrator runs it, every command
+of the full gate, on the
 actual landed tip, in your worktree; it is **fail-closed** — a nonzero exit
 with no parsed failures (crash, OOM, a runner that died before emitting
 results, a truncated log) is a failure until proven otherwise, never a silent

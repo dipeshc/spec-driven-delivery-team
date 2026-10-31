@@ -19,8 +19,8 @@ that loop, running every role as a headless engine process in its own
 worktree and keeping all state in git plus the progress ledger.
 
 `sdt` is the framework's `bin/sdt`. It is on your PATH when the framework was
-installed as a plugin or with `sdt install`; otherwise call it by path. `sdt
-paths` prints where the framework, its charter and its roles live.
+installed as a plugin or with `sdt install --bin-dir <dir>`; otherwise call it
+by path. `sdt paths` prints where the framework, its charter and its roles live.
 
 ## Read these first
 
@@ -61,9 +61,8 @@ is found:
 3. one lightweight self-review pass;
 4. `merge --ff-only` into the default branch yourself.
 
-The orchestrator's full-gate run on every new tip is the independent
-verification for this lane when a run is active; otherwise run the full gate
-once before you call it done.
+The independent verification and the no-run-active case are defined in the
+charter's "Scoped writers to the main working tree" (writer 2).
 
 Escalate mid-flight to a research spike, or to filing a team-lane item, if the
 grep-first pass doesn't find root cause, or the item turns out to need a real
