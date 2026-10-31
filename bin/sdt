@@ -235,6 +235,7 @@ class Adapter:
     tested: bool
     network: bool
     vision: bool
+    streams: bool
     path: Path
 
     @property
@@ -339,6 +340,7 @@ def load_adapter(name: str, dirs: list[Path]) -> Adapter:
         tested=bool(data.get("tested", False)),
         network=bool(data.get("network", True)),
         vision=bool(data.get("vision", False)),
+        streams=bool(data.get("streams", False)),
         path=path,
     )
 
@@ -428,12 +430,24 @@ def extract_final_text(adapter: Adapter, stdout: str, out_file: Path) -> str:
     obj = _last_json_object(stdout)
     if obj is None:
         raise SdtError("engine stdout holds no JSON object")
-    if adapter.success_key and str(obj.get(adapter.success_key)) != adapter.success_value:
-        raise SdtError(f"engine reported {adapter.success_key}={obj.get(adapter.success_key)!r}")
-    value = obj.get(key)
+    if adapter.success_key:
+        status = _lookup(obj, adapter.success_key)
+        if str(status) != adapter.success_value:
+            raise SdtError(f"engine reported {adapter.success_key}={status!r}")
+    value = _lookup(obj, key)
     if not isinstance(value, str):
         raise SdtError(f"engine JSON has no string {key!r}")
     return value
+
+
+def _lookup(obj: dict[str, Any], dotted: str) -> Any:
+    """`a.b.c` through nested objects; None where the path is absent."""
+    current: Any = obj
+    for part in dotted.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _last_json_object(stdout: str) -> dict[str, Any] | None:
@@ -562,7 +576,9 @@ class RoleRun:
             self._last_size, self._last_growth = size, t
         if t - self.started > self.timeout:
             self.kill("timeout")
-        elif t - self._last_growth > self.stall:
+        elif self.adapter.streams and t - self._last_growth > self.stall:
+            # Only an engine that streams events can be judged by log growth; a
+            # single-object JSON engine is silent until it finishes.
             self.kill("stalled")
         return self.proc.poll() is not None
 

@@ -120,10 +120,21 @@ def test_parse_result_fails_closed(sdt: ModuleType, text: str) -> None:
 
 def test_extract_json_result_checks_success(sdt: ModuleType, tmp_path: Path) -> None:
     adapter = sdt.load_adapter("claude", [ROOT / "adapters"])
-    ok = '{"subtype": "success", "result": "final"}'
-    assert sdt.extract_final_text(adapter, ok, tmp_path / "none") == "final"
+    stream = '{"type":"assistant","message":{}}\n{"type":"result","subtype": "success", "result": "final"}\n'
+    assert sdt.extract_final_text(adapter, stream, tmp_path / "none") == "final"
     with pytest.raises(sdt.SdtError):
         sdt.extract_final_text(adapter, '{"subtype": "error_max_turns", "result": "x"}', tmp_path / "none")
+    assert adapter.streams, "a single-object JSON engine cannot be judged by log growth"
+
+
+def test_extract_nested_result(sdt: ModuleType, tmp_path: Path) -> None:
+    adapter = sdt.load_adapter("agy", [ROOT / "adapters"])
+    stream = '{"event":"step_update"}\n{"event":"result","result":{"status":"SUCCESS","response":"done"}}\n'
+    assert sdt.extract_final_text(adapter, stream, tmp_path / "none") == "done"
+    with pytest.raises(sdt.SdtError):
+        sdt.extract_final_text(
+            adapter, '{"event":"result","result":{"status":"ERROR","response":"x"}}', tmp_path / "none"
+        )
 
 
 def test_extract_file_mode(sdt: ModuleType, tmp_path: Path) -> None:

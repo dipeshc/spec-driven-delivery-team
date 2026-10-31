@@ -10,6 +10,7 @@ model_args = ["--model", "{model}"]
 add_dir = { flag = "--add-dir", style = "repeat" }
 prompt = "stdin"
 stdin_args = []
+streams = true
 output = "text"
 timeout_exit_codes = [53]
 

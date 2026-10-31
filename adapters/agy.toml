@@ -5,21 +5,23 @@
 # last with the prompt behind it. Approvals are bypassed because the run is
 # confined by its working directory plus the explicit add-dirs; the
 # orchestrator enforces the wall-clock timeout, so the CLI's own print timeout
-# is left unlimited. The final message is the `response` key of the JSON
-# object on stdout, valid only when `status` is `SUCCESS`.
+# is left unlimited. Events stream as JSON lines (so liveness can be judged by
+# log growth); the final line is `{"event": "result", "result": {...}}`, whose
+# `response` is the final message, valid only when `status` is `SUCCESS`.
 name = "agy"
 tested = true
 network = true
 vision = false
 
-command = ["agy", "--output-format", "json", "--dangerously-skip-permissions", "--print-timeout", "0s"]
+command = ["agy", "--output-format", "stream-json", "--dangerously-skip-permissions", "--print-timeout", "0s"]
 model_args = ["--model", "{model}"]
 add_dir = { flag = "--add-dir", style = "repeat" }
 prompt = "arg"
 prompt_args = ["--print"]
 stdin_args = []
-output = "json:response"
-success = { key = "status", value = "SUCCESS" }
+streams = true
+output = "json:result.response"
+success = { key = "result.status", value = "SUCCESS" }
 timeout_exit_codes = []
 
 # Names from `agy models`; the suffix is the reasoning effort. Override in

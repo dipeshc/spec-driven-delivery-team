@@ -116,8 +116,10 @@ judgment-heavy items. The orchestrator pins the model for that tier from the
 adapter and `config.toml`; a role neither verifies nor declares its model, and
 the ledger records it.
 
-**Timeouts and liveness.** Every run has a wall-clock budget and a stall limit
-(`config.toml` `[limits]`). The orchestrator kills a run that exceeds either and
+**Timeouts and liveness.** Every run has a wall-clock budget and, on an engine
+whose adapter streams events (`streams = true`), a stall limit judged by log
+growth (`config.toml` `[limits]`); an engine that is silent until it finishes
+is judged by the budget alone. The orchestrator kills a run that exceeds either and
 re-dispatches it with `adopt: true`, bounded by `adopt_attempts`, after which
 triage decides. There is no resume: a re-dispatched role reconstructs its state
 from the worktree and branch it adopts, which is why git, not a run's context,

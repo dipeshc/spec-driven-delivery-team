@@ -8,13 +8,16 @@ tested = true
 network = true
 vision = true
 
-command = ["claude", "-p", "--output-format", "json", "--permission-mode", "bypassPermissions"]
+command = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
 model_args = ["--model", "{model}"]
 add_dir = { flag = "--add-dir", style = "once" }
 prompt = "stdin"
 stdin_args = []
-# The final message is the `result` key of the JSON object on stdout, valid
-# only when `subtype` is `success`.
+# Events stream as JSON lines (`--verbose` is what print mode needs for that),
+# so liveness can be judged by log growth; the final line is the result object,
+# whose `result` key is the final message, valid only when `subtype` is
+# `success`.
+streams = true
 output = "json:result"
 success = { key = "subtype", value = "success" }
 timeout_exit_codes = []

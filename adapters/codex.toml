@@ -17,6 +17,7 @@ prompt = "stdin"
 # A lone `-` tells `codex exec` to read the prompt from stdin.
 stdin_args = ["-"]
 # `-o` writes the final message to a file; stdout carries JSONL events.
+streams = true
 output = "file"
 timeout_exit_codes = []
 
