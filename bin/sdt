@@ -53,6 +53,17 @@ ROLE_TIERS = {
     "exploration": "frontier",
     "ui-inspector": "frontier",
 }
+DISPATCH_MESSAGES = {
+    "manager": "TRIAGE-REQUEST",
+    "developer": "IMPLEMENT",
+    "reviewer": "REVIEW-REQUEST",
+    "merge-clerk": "MERGE-REQUEST",
+    "qa": "REGRESSION-REQUEST",
+    "researcher": "RESEARCH-REQUEST",
+    "consistency-check": "RUN-CONSISTENCY",
+    "exploration": "EXPLORATION-REQUEST",
+    "ui-inspector": "UI-INSPECTOR-REQUEST",
+}
 OWNER_RUN_ROLES = ("exploration", "ui-inspector")
 EVENT_CAP = 20
 BLOCKED_MARK = "⛔"
@@ -2336,11 +2347,9 @@ def cmd_role(args: argparse.Namespace) -> int:
         payload = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError as exc:
         raise SdtError(f"payload is not JSON: {exc}") from None
+    payload.setdefault("message", DISPATCH_MESSAGES.get(args.name, f"{args.name.upper()}-REQUEST"))
     if args.name == "consistency-check":
-        payload.setdefault("message", "RUN-CONSISTENCY")
         payload.setdefault("tip", project.tip())
-    else:
-        payload.setdefault("message", f"{args.name.upper()}-REQUEST")
     if args.cwd:
         cwd = Path(args.cwd).resolve()
     else:

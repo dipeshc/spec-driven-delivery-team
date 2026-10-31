@@ -122,6 +122,7 @@ def main() -> int:
         reply(
             {
                 "message": "FILED",
+                "received": payload,
                 "items": [
                     {
                         "filename": f"P2-researched-{slug}.md",

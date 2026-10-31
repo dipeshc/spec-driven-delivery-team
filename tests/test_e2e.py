@@ -293,6 +293,14 @@ def test_failed_consistency_check_is_retried_then_reported(tmp_path: Path) -> No
     assert len(failed) == 1 and "after 2 attempt(s)" in failed[0]["text"], state["events"]
 
 
+def test_researcher_role_sends_research_request(repo: Path) -> None:
+    payload = json.dumps({"item": "some ask", "question": "q?", "item_text": "the ask"})
+    proc = run_sdt(repo, "role", "researcher", "--payload", payload)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout[proc.stdout.index("{") :])
+    assert result["received"]["message"] == "RESEARCH-REQUEST"
+
+
 def test_status_without_run(repo: Path) -> None:
     proc = run_sdt(repo, "status")
     assert proc.returncode == 0
