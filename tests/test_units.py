@@ -881,6 +881,31 @@ def test_research_retired_regression_is_closed_but_never_done(
     assert state["items"] == [], "a retired item is on the board"
 
 
+def test_research_refiled_under_its_own_filename_survives_and_is_retriaged(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slug = "P2-rough-ask"
+    orch, _ = triage_orchestrator(sdt, tmp_path, monkeypatch, [slug])
+    path = orch.p.backlog / f"{slug}.md"
+    fresh = {slug: sdt.BacklogItem(slug, path, "P2", path.read_text())}
+    orch.apply_triage({"items": [{"slug": slug, "action": "research", "reason": "q"}]}, fresh)
+    (research,) = orch.runs
+    orch.runs.remove(research)
+    filed = {"message": "FILED", "items": [{"filename": f"{slug}.md", "body": "# Sharpened\n\nResearched text."}]}
+    orch.on_researcher(research, sdt.RunResult(True, payload=filed))
+    orch.flush_housekeeping()
+    assert path.read_text() == "# Sharpened\n\nResearched text.\n"
+    subjects = sdt.git("log", "--no-show-signature", "--format=%s", cwd=orch.p.root).splitlines()
+    assert not any(s.startswith("chore(backlog): retire") for s in subjects), "a rewritten file was retired"
+    assert slug not in orch.items, "the slug stays known, so the run would never triage the rewrite"
+    orch.runs.clear()
+    orch.manager_busy = False
+    orch.intake()
+    (triage,) = orch.runs
+    (sent,) = triage.payload["items"]
+    assert sent["slug"] == slug and "Researched text." in sent["text"]
+
+
 def test_review_batches_run_concurrently_up_to_reviewers(sdt: ModuleType, orch: Any) -> None:
     orch.cfg.reviewers = 2
     for slug in ("P2-a", "P2-b", "P2-c"):

@@ -2164,18 +2164,30 @@ class Orchestrator:
         why = str(res.payload.get("why", "")).strip()
 
         def apply() -> None:
+            rewritten: set[Path] = set()
             if message == "FILED":
-                filed = ", ".join(self.p.file_items(items, f"research for {it.slug}"))
+                written = self.p.file_items(items, f"research for {it.slug}")
+                filed = ", ".join(written)
+                # A filed item may reuse an originating filename: that file is the run's output, not something to retire.
+                rewritten = {self.p.backlog / n for n in written} & {self.p.root / rel for rel in it.paths}
                 subject = f"chore(backlog): retire {it.slug} — superseded by researched item(s)"
                 body = f"Filed: {filed or 'nothing'}"
+                if rewritten:
+                    body += "\nRewritten in place: " + ", ".join(sorted(p.name for p in rewritten))
                 it.note = f"researched; filed {filed}"
             else:
                 subject = f"chore(backlog): retire {it.slug} — {finding[:60] or 'research found no item'}"
                 body = f"Research found no item to file.\n\nFinding: {finding}\n\nWhy: {why}"
                 it.note = f"researched; no item: {finding}"
-            self.p.retire_items([self.p.root / rel for rel in it.paths], subject, body)
-            it.retired = True
+            self.p.retire_items(
+                [self.p.root / rel for rel in it.paths if self.p.root / rel not in rewritten], subject, body
+            )
             self.event("research", f"{it.slug}: {message}; {it.note}")
+            if rewritten:
+                # Dropping the item makes its slug fresh, so the next intake triages the researched text.
+                del self.items[it.slug]
+                return
+            it.retired = True
 
         self.housekeep(f"research {it.slug}", apply)
 
