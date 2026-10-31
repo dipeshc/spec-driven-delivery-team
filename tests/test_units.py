@@ -402,3 +402,12 @@ def test_run_id_stays_short_for_long_tags(sdt: ModuleType) -> None:
     tag = "+".join(f"P2-some-fairly-long-item-slug-number-{i}" for i in range(8))
     short = tag if len(tag) <= 60 else tag[:48] + "-" + __import__("hashlib").sha256(tag.encode()).hexdigest()[:8]
     assert len(short) < 64
+
+
+def test_board_dir_is_fixed_whatever_the_config_says(sdt: ModuleType, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".delivery-team").mkdir(parents=True)
+    (repo / ".delivery-team" / "config.toml").write_text('[board]\ndir = "elsewhere"\n')
+    sdt.git("init", "-q", "-b", "main", cwd=repo)
+    project = sdt.Project(repo, [ROOT / "tests" / "adapters"])
+    assert project.board_dir == project.root / ".delivery-team" / "progress"

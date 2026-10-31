@@ -30,8 +30,8 @@ request is the owner asking for it again.
    sdt board
    ```
 
-   It resolves the board directory from `config.toml` (`[board] dir`, default
-   `<repo>/.delivery-team/progress/`), copies the page in if it is missing
+   It uses the fixed board directory `<repo>/.delivery-team/progress/` (the
+   charter fixes the ledger path, so it is not configurable), copies the page in if it is missing
    (`--refresh` recopies it after a framework update), opens it by platform
    (`open`, `xdg-open`, or `start`; a headless host simply has nothing to
    open), and prints the page's `file://` URL. If `[board] enabled = false`, it

@@ -88,4 +88,3 @@ branch_prefix = "item/"
 
 [board]
 enabled = true
-dir = ".delivery-team/progress"

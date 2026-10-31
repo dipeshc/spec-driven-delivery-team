@@ -36,6 +36,8 @@ FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 ROLES_DIR = FRAMEWORK_ROOT / "roles"
 ADAPTERS_DIR = FRAMEWORK_ROOT / "adapters"
 PROJECT_DIR_NAME = ".delivery-team"
+# Fixed by the charter's progress-ledger section: the statusline and every other consumer read this path.
+BOARD_DIR_NAME = "progress"
 CHARTER_PATH = FRAMEWORK_ROOT / "docs" / "team-charter.md"
 
 STAGES = ("queued", "implementing", "review", "landing", "done", "blocked")
@@ -128,7 +130,6 @@ class Config:
     worktrees_dir: str = ".delivery-team/worktrees"
     branch_prefix: str = "item/"
     board_enabled: bool = True
-    board_dir: str = ".delivery-team/progress"
 
     DEFAULT_TIMEOUTS = {
         "manager": 900,
@@ -210,7 +211,6 @@ def load_config(path: Path) -> Config:
     cfg.branch_prefix = str(wt.get("branch_prefix", cfg.branch_prefix))
     board = _section(data, "board")
     cfg.board_enabled = bool(board.get("enabled", True))
-    cfg.board_dir = str(board.get("dir", cfg.board_dir))
     return cfg
 
 
@@ -668,7 +668,7 @@ class Project:
         self.notes_dir = self.dir / "notes"
         self.worktrees = self.root / self.cfg.worktrees_dir
         self.backlog = self.root / self.cfg.backlog_dir
-        self.board_dir = self.root / self.cfg.board_dir
+        self.board_dir = self.dir / BOARD_DIR_NAME
         self.adapter_dirs = adapter_dirs(self.root, adapter_extra or [])
         self.git_common = Path(git("rev-parse", "--git-common-dir", cwd=self.root))
         if not self.git_common.is_absolute():
