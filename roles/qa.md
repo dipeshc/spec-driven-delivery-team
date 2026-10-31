@@ -64,7 +64,10 @@ directory.
      (the profile's Verification environment says which) → `ENVIRONMENT`.
      Return known-failure patterns (substrings that identify this failure and
      nothing else) with a justifying reason; the orchestrator records them in
-     the known-failures file so the same red never pages anyone again. The
+     the known-failures file, so the same red does not page anyone again,
+     provided it prints failure lines for the patterns to cover and is not
+     killed by a signal (a failure that prints none, or exits above 128, is
+     never filtered; see the next bullet). The
      gate matches patterns line by line against the failure lines (`FAIL`,
      `FAILED`, `FAILURE` or `ERROR` as an upper-case word, TAP's `not ok`,
      Jest's `●` bullet, an `error:` diagnostic) and filters a command only
@@ -73,11 +76,17 @@ directory.
      covers yet. A pattern that would also mask a real failure is wrong — be
      exact.
    - A crash with no parsed failures: rerun the failing command once in your
-     worktree. If it reproduces, it is a regression against the tip, filed
-     with the exit code and the log slice — an unexplained crash is a finding,
-     not noise. If it does not, it is `ENVIRONMENT` with the reason "did not
-     reproduce". The gate never filters a crash (no failure line, or an exit
-     above 128), so a recurrence comes back to you to rule afresh.
+     worktree. If it reproduces and its cause is not one the bullet above
+     names, it is a regression against the tip, filed with the exit code and
+     the log slice — an unexplained crash is a finding, not noise. If its
+     cause is one that bullet names (a layer or tool this environment cannot
+     run), it is `ENVIRONMENT`. If it does not reproduce, it is `ENVIRONMENT`
+     with the reason "did not reproduce". The gate never filters a crash (no
+     failure line, or an exit above 128), whatever the known-failures file
+     holds, so a recurrence comes back to you on every tip it reaches, and an
+     `ENVIRONMENT` ruling on one records patterns that cannot take effect.
+     When the fault will recur, say in `reason` what the owner must repair:
+     the environment, or that command in `[gate] full`.
 
 ## The item you return
 
