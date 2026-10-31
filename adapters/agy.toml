@@ -1,5 +1,5 @@
-# Engine adapter: Antigravity CLI (`agy`). Launch and output shape verified by
-# hand; marked tested once a full role run has completed on it.
+# Engine adapter: Antigravity CLI (`agy`). Tested: a full pipeline run has
+# landed on it.
 #
 # Print mode takes the prompt as the value of `--print`, so that flag goes
 # last with the prompt behind it. Approvals are bypassed because the run is
@@ -8,7 +8,7 @@
 # is left unlimited. The final message is the `response` key of the JSON
 # object on stdout, valid only when `status` is `SUCCESS`.
 name = "agy"
-tested = false
+tested = true
 network = true
 vision = false
 

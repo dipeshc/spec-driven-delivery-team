@@ -47,7 +47,7 @@ def test_shipped_adapters_load(sdt: ModuleType, name: str, tmp_path: Path) -> No
     adapter = sdt.load_adapter(name, [ROOT / "adapters"])
     assert adapter.name == name
     assert adapter.command
-    assert adapter.tested == (name in {"claude"}), "only engines exercised for real are marked tested"
+    assert adapter.tested == (name in {"claude", "agy"}), "only engines exercised for real are marked tested"
     prompt = tmp_path / "p"
     prompt.write_text("PROMPT")
     argv = adapter.render(model="m", cwd=tmp_path, add_dirs=[Path("/g")], out=tmp_path / "o", prompt_file=prompt)

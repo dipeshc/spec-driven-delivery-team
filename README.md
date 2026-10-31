@@ -3,8 +3,9 @@
 An autonomous, docs-driven software delivery team that runs on **any coding
 CLI**. You file backlog items as files in your repo; an orchestrator runs a
 team of roles — Developers, a Reviewer, a Merge-Clerk, QA — as headless
-processes of whatever engine you configure (Claude Code, Codex CLI, Gemini CLI
-tested; others best-effort), each in its own git worktree, reviewing each
+processes of whatever engine you configure (Claude Code and the Antigravity
+CLI tested; Codex, Gemini and others best-effort), each in its own git
+worktree, reviewing each
 other's work and landing fast-forward-only commits. It has produced thousands
 of commits end-to-end, under human direction but not human keystrokes.
 
@@ -71,8 +72,9 @@ for visual QA — live in `roles/` beside the team and run through `sdt role`.
 
 Every role runs as **one headless, worktree-confined process** of the engine
 the project names in its config; an adapter file per engine says how to run
-that CLI (`adapters/claude.toml`, `codex.toml`, `gemini.toml`; `cursor`,
-`opencode` and `copilot` ship best-effort and say so). The orchestrator is the
+that CLI (`adapters/claude.toml` and `agy.toml` have landed real runs;
+`codex`, `gemini`, `cursor`, `opencode` and `copilot` ship best-effort and
+say so). The orchestrator is the
 only component that talks to an engine, so switching engines — or running
 developers on one and judgment roles on another — is a config change. The
 skills that let your harness session drive the team are plain `SKILL.md`
@@ -84,7 +86,7 @@ Clone the framework, then in each project you want the team to work on:
 
 ```
 sdt init                       # creates .delivery-team/config.toml and profile.md from the templates
-sdt install --harness codex    # or claude | gemini | cursor | opencode | copilot | all
+sdt install --harness claude   # or codex | gemini | cursor | opencode | copilot | all
 sdt doctor                     # engine on PATH, preconditions, roles
 ```
 
