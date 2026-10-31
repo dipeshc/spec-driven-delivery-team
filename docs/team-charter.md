@@ -72,7 +72,7 @@ Not every change earns the full pipeline. Decide the lane at intake:
 - **Direct lane** (the default): small, single-area changes with existing test
   coverage, no security/data-model/cross-cutting implications. Investigate
   directly, implement on a short-lived branch, run the *scoped* gate
-  (`config.toml` `[gate]`, in your run context) plus any invariant guard the
+  (`config.toml` `[gate]`) plus any invariant guard the
   change triggers, self-review once, land. No
   research spike, no separate reviewer, no worktree ceremony.
 - **Team lane**: auth/security/crypto, data-model or persistence changes,
