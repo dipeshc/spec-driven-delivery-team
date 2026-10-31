@@ -302,8 +302,9 @@ returns in its result for the orchestrator to apply.
    **progress ledger** (`<repo>/.delivery-team/progress/state.js`, its
    `state.json` twin and the copied `dashboard.html`), a run's
    `notes_for_next_run` (appended to its role's notes file), and each run's
-   prompt and log plus the pid lock under `.delivery-team/runs/` — runtime
-   state written as the run goes, never committed. The orchestrator is the **only** writer
+   prompt and log, each worktree's install marker, and the pid lock under
+   `.delivery-team/runs/` — runtime state written as the run goes, never
+   committed. The orchestrator is the **only** writer
    that removes an item worktree or deletes an item branch; a role leaves both
    on disk and reports.
 4. **The owner's session** — backlog item files and the framework files under
