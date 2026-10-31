@@ -663,6 +663,32 @@ def test_environment_ruling_is_recorded_without_a_known_failures_key(
     assert "(known failure)" in (orch.p.runs_dir / f"qa-gate-{again[:8]}.log").read_text()
 
 
+def test_qa_runs_read_a_copy_of_the_gate_log_inside_their_own_tree(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch, dispatched = gate_orchestrator(sdt, tmp_path, monkeypatch)
+    monkeypatch.delattr(orch.p, "start_run")
+    monkeypatch.setattr(sdt, "RoleRun", lambda **kw: SimpleNamespace(**kw))
+    orch.tick()
+    red = land_outside(sdt, orch.p.root, "red.txt")
+    until_gated(orch, orch.tick)
+    original = orch.p.gate_log(red)
+
+    def reads_the_log_inside_its_tree(run: Any) -> None:
+        assert run.add_dirs == [orch.p.git_common], "a QA run is granted the git common directory and nothing else"
+        log_path = Path(run.payload["log_path"])
+        assert log_path.is_relative_to(run.cwd)
+        assert log_path.read_text() == original.read_text()
+
+    (first,) = dispatched
+    reads_the_log_inside_its_tree(first)
+    Path(first.payload["log_path"]).write_text("stale\n")
+    orch.on_qa(first, sdt.RunResult(ok=False, error="engine exited 1"))
+    (_, retry) = dispatched
+    reads_the_log_inside_its_tree(retry)
+    assert "test ! -e red.txt" in original.read_text(), "the runs/ original is kept for the owner"
+
+
 # ---- role worktrees and routing
 
 
@@ -775,6 +801,7 @@ def test_role_worktree_refuses_a_tree_a_live_run_works_in(sdt: ModuleType, orch:
 
 def test_failed_run_redispatch_waits_for_a_held_tree(sdt: ModuleType, orch: Any) -> None:
     tip = head(sdt, orch.p.root)
+    orch.p.gate_log(tip).write_text("gate log\n")
     qa = orch.p.ensure_detached_worktree("qa")
     holder = SimpleNamespace(role=SimpleNamespace(name="qa"), cwd=qa, tag="other")
     orch.start(holder)
@@ -787,7 +814,8 @@ def test_failed_run_redispatch_waits_for_a_held_tree(sdt: ModuleType, orch: Any)
     assert not orch.drained(), "a deferred re-dispatch was dropped"
     orch.dispatch_deferred()
     (retry,) = orch.started
-    assert retry.cwd == qa and retry.payload is failed.payload and orch.deferred_runs == []
+    assert retry.cwd == qa and orch.deferred_runs == []
+    assert retry.payload == {**failed.payload, "log_path": str(qa / "qa-gate.log")}
 
 
 def test_sweep_map_that_keeps_failing_ends_the_sweep(sdt: ModuleType, tmp_path: Path) -> None:

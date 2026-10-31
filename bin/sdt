@@ -1140,6 +1140,10 @@ class Project:
 
     # -- QA gate
 
+    def gate_log(self, tip: str) -> Path:
+        """The full gate's log on `tip`, kept under runs/ for the owner."""
+        return self.runs_dir / f"qa-gate-{tip[:8]}.log"
+
     def start_full_gate(self, tip: str, path: Path, log_path: Path) -> GateRun:
         """Every full-gate command in order, in the background; each failure is filtered by the known-failures patterns."""
         return GateRun(
@@ -1993,7 +1997,7 @@ class Orchestrator:
             return
         self.qa_pending_tips.pop(0)
         self.qa_state = f"gating {tip[:8]}"
-        self.gate = self.p.start_full_gate(tip, wt, self.p.runs_dir / f"qa-gate-{tip[:8]}.log")
+        self.gate = self.p.start_full_gate(tip, wt, self.p.gate_log(tip))
 
     def on_gate_done(self, gate: GateRun) -> None:
         tip, failures, log_path = gate.tip, gate.failures, gate.log_path
@@ -2016,11 +2020,21 @@ class Orchestrator:
             "message": "REGRESSION-REQUEST",
             "tip": tip,
             "failed_commands": failures,
-            "log_path": str(log_path),
             "log_tail": tail,
             "last_green_tip": self.qa_green_tip,
         }
-        self.start(self.p.start_run("qa", payload, cwd=gate.cwd, tag=tip[:8], extra_dirs=[self.p.runs_dir]))
+        self.start(self.start_qa(gate.cwd, tip, payload))
+
+    def start_qa(self, wt: Path, tip: str, payload: dict[str, Any]) -> RoleRun:
+        """A QA run in `wt` whose `log_path` is a copy of the gate log on `tip`, placed in `wt`.
+
+        No run is granted the main tree's runs/, so the copy is how QA reads the log
+        inside its own confinement. Its name is fixed, so a project that ignores
+        `*.log` keeps at most one copy past the next reset's clean.
+        """
+        copy = wt / "qa-gate.log"
+        shutil.copyfile(self.p.gate_log(tip), copy)
+        return self.p.start_run("qa", {**payload, "log_path": str(copy)}, cwd=wt, tag=tip[:8])
 
     def regression_open(self, signature: str) -> bool:
         """True while a filed regression item for this failure signature has not landed or blocked."""
@@ -2041,11 +2055,8 @@ class Orchestrator:
             error = res.error or f"unexpected QA message {message!r}"
             if self.retry_due(self.qa_failures, tip):
                 self.event("error", f"qa run failed at {run.tag} ({error}); re-dispatching")
-                self.redispatch(
-                    "qa",
-                    tip,
-                    lambda wt: self.p.start_run("qa", run.payload, cwd=wt, tag=run.tag, extra_dirs=[self.p.runs_dir]),
-                )
+                # The retry's reset can clean out the earlier copy of the log, so start_qa copies it again.
+                self.redispatch("qa", tip, lambda wt: self.start_qa(wt, tip, run.payload))
                 return
             # Nothing was filed, so the next red with these failures must reach QA again.
             self.open_regressions.pop(signature, None)

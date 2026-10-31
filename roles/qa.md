@@ -47,7 +47,8 @@ one beside it. You are dispatched only for what remains: a **new** red.
 
 `REGRESSION-REQUEST {tip, failed_commands[], log_path, log_tail,
 last_green_tip}`. Your working directory is the QA worktree, detached at the
-failing tip; the gate's full log is at `log_path` (readable to you).
+failing tip; the gate's full log is at `log_path`, a copy inside your working
+directory.
 
 ## Root-cause, then rule
 
