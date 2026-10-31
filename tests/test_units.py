@@ -109,6 +109,7 @@ def test_shipped_preconditions_are_adapter_fields(sdt: ModuleType) -> None:
     assert sdt.load_adapter("claude", [ROOT / "adapters"]).project_hooks_file == ".claude/settings.json"
     assert sdt.load_adapter("codex", [ROOT / "adapters"]).requires_git_repo
     assert not sdt.load_adapter("gemini", [ROOT / "adapters"]).requires_git_repo
+    assert sdt.load_adapter("gemini", [ROOT / "adapters"]).project_hooks_file == ".gemini/settings.json"
 
 
 def test_tier_override(sdt: ModuleType) -> None:

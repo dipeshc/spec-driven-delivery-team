@@ -9,6 +9,9 @@ name = "gemini"
 tested = false
 network = true
 vision = true
+# Gemini CLI runs the hooks this project settings file declares once
+# `--skip-trust` trusts the workspace; `sdt doctor` warns when it declares any.
+project_hooks_file = ".gemini/settings.json"
 
 command = ["gemini", "-p", "", "--approval-mode", "yolo", "--skip-trust", "-o", "json"]
 model_args = ["-m", "{model}"]
