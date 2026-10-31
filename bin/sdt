@@ -2185,8 +2185,7 @@ class Orchestrator:
                 written = self.p.file_items(items, f"research for {it.slug}")
                 if not written:
                     # Only a filed item supersedes the rough ask, so a FILED that files nothing is a failed run.
-                    skipped = ", ".join(repr(str(i.get("filename", ""))) for i in items) or "none returned"
-                    self.research_failed(it, run, f"FILED filed no item (filenames skipped: {skipped})")
+                    self.research_failed(it, run, filed_nothing_reason(items))
                     return
                 filed = ", ".join(written)
                 # A filed item may reuse an originating filename: that file is the run's output, not something to retire.
@@ -2731,6 +2730,11 @@ def cmd_board(args: argparse.Namespace) -> int:
     return 0
 
 
+def filed_nothing_reason(items: list[dict[str, Any]]) -> str:
+    skipped = ", ".join(repr(str(i.get("filename", ""))) for i in items) or "none returned"
+    return f"FILED filed no item (filenames skipped: {skipped})"
+
+
 def cmd_role(args: argparse.Namespace) -> int:
     project = Project(Path.cwd(), [Path(d) for d in args.adapter_dir])
     if args.payload == "-":
@@ -2760,9 +2764,16 @@ def cmd_role(args: argparse.Namespace) -> int:
         return 1
     if isinstance(res.payload.get("notes_for_next_run"), str):
         project.append_notes(args.name, res.payload["notes_for_next_run"])
+    items: list[dict[str, Any]] = []
+    filed: list[str] = []
     if args.file_items and isinstance(res.payload.get("items"), list):
-        filed = project.file_items([i for i in res.payload["items"] if isinstance(i, dict)], f"{args.name} run")
+        items = [i for i in res.payload["items"] if isinstance(i, dict)]
+        filed = project.file_items(items, f"{args.name} run")
         res.payload["filed"] = filed
+    # A Researcher FILED that files no item is a failed run, never a verdict (charter, "The result.").
+    if args.file_items and args.name == "researcher" and res.payload.get("message") == "FILED" and not filed:
+        print(json.dumps({"message": "RUN-FAILED", "error": filed_nothing_reason(items), "log": str(res.log_path)}))
+        return 1
     print(json.dumps(res.payload, indent=2))
     return 0
 

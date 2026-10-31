@@ -1151,3 +1151,61 @@ def test_merge_clerk_failed_retry_returns_to_the_clerk(sdt: ModuleType, orch: An
     assert (it.head, it.branch) == ("abc", "item/P2-a")
     orch.dispatch_landing()
     assert [r.role.name for r in orch.started] == ["manager", "merge-clerk"]
+
+
+def run_adhoc_researcher(
+    sdt: ModuleType,
+    project: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reply: dict[str, Any],
+    file_items: bool = True,
+) -> tuple[int, str]:
+    """Drive `cmd_role researcher` against a stubbed run that finishes with `reply`; return (exit code, stdout)."""
+    import argparse
+
+    result = sdt.RunResult(True, payload=reply)
+    finished = SimpleNamespace(poll=lambda: True, result=lambda: result)
+    monkeypatch.setattr(sdt.Project, "start_run", lambda self, name, payload, **kw: finished)
+    monkeypatch.chdir(project.root)
+    args = argparse.Namespace(
+        adapter_dir=[],
+        payload="{}",
+        name="researcher",
+        cwd=str(project.root),
+        tier=None,
+        engine=None,
+        file_items=file_items,
+    )
+    code = sdt.cmd_role(args)
+    return code, capsys.readouterr().out
+
+
+def test_role_researcher_filed_that_files_nothing_is_a_failed_run(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = make_project(sdt, tmp_path)
+    skipped = {"message": "FILED", "items": [{"filename": "docs/backlog/P2-sharpened.md", "body": "# Sharpened\n"}]}
+    code, out = run_adhoc_researcher(sdt, project, monkeypatch, capsys, skipped)
+    assert code == 1
+    failure = json.loads(out[out.index("{") :])
+    assert failure["message"] == "RUN-FAILED" and "'docs/backlog/P2-sharpened.md'" in failure["error"]
+    assert not list(project.backlog.glob("*.md"))
+
+    code, out = run_adhoc_researcher(sdt, project, monkeypatch, capsys, {"message": "FILED"})
+    assert code == 1 and "none returned" in json.loads(out)["error"]
+
+
+def test_role_researcher_filed_that_files_an_item_succeeds(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = make_project(sdt, tmp_path)
+    reply = {"message": "FILED", "items": [{"filename": "P2-sharpened.md", "body": "# Sharpened\n"}]}
+    code, out = run_adhoc_researcher(sdt, project, monkeypatch, capsys, reply)
+    assert code == 0 and json.loads(out[out.index("{") :])["filed"] == ["P2-sharpened.md"]
+    assert (project.backlog / "P2-sharpened.md").is_file()
+
+    code, out = run_adhoc_researcher(sdt, project, monkeypatch, capsys, {"message": "NO-ITEM", "why": "x"})
+    assert code == 0 and json.loads(out)["message"] == "NO-ITEM"
+    code, out = run_adhoc_researcher(sdt, project, monkeypatch, capsys, {"message": "FILED"}, file_items=False)
+    assert code == 0 and json.loads(out)["message"] == "FILED"
