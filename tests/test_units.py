@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
 from functools import partial
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -781,3 +784,58 @@ def test_board_dir_is_fixed_whatever_the_config_says(sdt: ModuleType, tmp_path: 
     sdt.git("init", "-q", "-b", "main", cwd=repo)
     project = sdt.Project(repo, [ROOT / "tests" / "adapters"])
     assert project.board_dir == project.root / ".delivery-team" / "progress"
+
+
+# ---- statusline script
+
+STATUSLINE = ROOT / "extras" / "claude" / "skills" / "statusline" / "statusline.sh"
+
+
+def ledger_orchestrator(sdt: ModuleType, tmp_path: Path) -> Any:
+    """An orchestrator over a fresh repo with the board on and items whose history spans several stages."""
+    project = make_project(sdt, tmp_path)
+    orch = sdt.Orchestrator(project, engine=None, watch=False, label="t", args_text="")
+    path: list[tuple[str, list[str]]] = [
+        ("P1-done-one", ["implementing", "review", "landing", "done"]),
+        ("P2-done-two", ["implementing", "review", "landing", "done"]),
+        ("P2-in-review", ["implementing", "review"]),
+        ("P3-implementing", ["implementing"]),
+        ("P3-blocked", ["implementing", "review", "blocked"]),
+        ("P3-queued", []),
+    ]
+    for slug, stages in path:
+        it = sdt.Item(slug=slug, slugs=[slug], priority=slug[:2], paths=[], texts={slug: slug})
+        it.agent, it.model = "developer", "m1"
+        it.note = "needs [owner] input" if slug == "P3-blocked" else ""
+        it.checks = [{"name": "lint", "stage": "review", "result": "pass"}]
+        for stage in stages:
+            it.enter(stage, 'said "stage": "landing" {x}')
+        orch.items[slug] = it
+    return orch
+
+
+def render(project_dir: Path) -> list[str]:
+    stdin = json.dumps({"workspace": {"project_dir": str(project_dir)}})
+    out = subprocess.run(["sh", str(STATUSLINE)], input=stdin, capture_output=True, text=True, check=True).stdout
+    return out.splitlines()
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+@pytest.mark.parametrize("twin", ["state.json", "state.js"])
+def test_counts_and_detail_come_from_items_not_their_history(sdt: ModuleType, tmp_path: Path, twin: str) -> None:
+    orch = ledger_orchestrator(sdt, tmp_path)
+    orch.write_ledger()
+    board = orch.p.board_dir
+    if twin == "state.js":
+        (board / "state.json").unlink()
+    elif (board / "state.js").exists():
+        (board / "state.js").unlink()
+
+    lines = render(orch.p.root)
+
+    assert len(lines) == 2
+    assert re.search(r"team 2/6 ", lines[0])
+    assert "impl:1 review:1 land:0 blocked:1" in lines[0]
+    assert "P2-in-review" in lines[1]
+    assert "blocked P3-blocked" in lines[1]
+    assert "needs [owner] input" in lines[1]

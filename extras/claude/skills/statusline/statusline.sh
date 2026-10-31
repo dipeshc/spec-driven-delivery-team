@@ -50,14 +50,14 @@ if [ -f "$dir/state.json" ]; then
   json=$(cat "$dir/state.json" 2>/dev/null)
 elif [ -f "$dir/state.js" ]; then
   # state.js is `window.TEAM_STATE = { … };` — strip the prefix and trailing `;`.
-  json=$(tr '\n' ' ' < "$dir/state.js" 2>/dev/null \
-    | sed 's/^[[:space:]]*window\.TEAM_STATE[[:space:]]*=[[:space:]]*//; s/[[:space:]]*;[[:space:]]*$//')
+  json=$(sed '1s/^[[:space:]]*window\.TEAM_STATE[[:space:]]*=[[:space:]]*//; $s/[[:space:]]*;[[:space:]]*$//' "$dir/state.js" 2>/dev/null)
 else
   done_silent
 fi
 [ -n "$json" ] || done_silent
 
-# Collapse to one logical line so flat item objects can be scanned as `{…}`.
+# One-line copy for the whole-object scalar greps; the item walk below reads $json
+# line by line instead, because a per-character loop over one long line is quadratic.
 flat=$(printf '%s' "$json" | tr '\n' ' ')
 
 # Keys are UNQUOTED identifiers in the canonical state.js (`generatedAt:`,
@@ -82,16 +82,59 @@ str_of() {
   printf '%s' "$flat" \
     | sed -n "s/.*\"\{0,1\}$1\"\{0,1\}[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
 }
+
+# ---- isolate the items ----
+# The charter's item rows carry optional nested arrays of objects (`history`,
+# `checks`) that hold `stage` keys of their own, so a plain scan of the whole file
+# cannot tell an item from one of its history entries. This walks the `items` array
+# line by line, carrying depth across lines (string- and escape-aware; a JSON string
+# never spans lines in either file form), and prints each item on its own line with every nested
+# array or object collapsed to `[]` / `{}`, leaving only the item's own top-level
+# fields. All counts and the detail line read from these lines.
+items=$(printf '%s\n' "$json" | awk '
+function scan(line,   n, i, c, st, j) {
+  n = length(line)
+  i = 1
+  while (i <= n) {
+    c = substr(line, i, 1)
+    if (c == "\"") {
+      st = i
+      i++
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (c == "\\") i += 2
+        else if (c == "\"") break
+        else i++
+      }
+      if (cur && depth == 3) item = item substr(line, st, i - st + 1)
+      i++
+      continue
+    }
+    if (c == "[" || c == "{") {
+      if (cur && depth == 3) item = item (c == "[" ? "[]" : "{}")
+      else if (inItems && depth == 2 && c == "{") { cur = 1; item = "{" }
+      else if (!inItems && c == "[" && depth == 1 && substr(line, 1, i - 1) ~ /"?items"?[ ]*:[ ]*$/) inItems = 1
+      depth++
+    } else if (c == "]" || c == "}") {
+      depth--
+      if (cur && depth == 2) { print item "}"; cur = 0 }
+      else if (inItems && !cur && depth == 1) exit
+    } else if (cur && depth == 3) item = item c
+    i++
+  }
+}
+BEGIN { depth = 0 }
+{ scan($0) }
+')
+
 count_stage() {
-  printf '%s' "$flat" \
-    | grep -o "\"\{0,1\}stage\"\{0,1\}[[:space:]]*:[[:space:]]*\"$1\"" | wc -l | tr -d ' '
+  printf '%s\n' "$items" \
+    | grep -c "\"\{0,1\}stage\"\{0,1\}[[:space:]]*:[[:space:]]*\"$1\"" || true
 }
 
-# ---- pick a flat item object by stage, then read a field out of it ----
-# Item objects contain only scalars and the `grouped` array, so `{[^{}]*}` isolates
-# each one; filtering by stage selects items (run/repo/agents/events lack a stage).
+# ---- pick an item by stage, then read a field out of it ----
 item_obj() {
-  printf '%s' "$flat" | grep -o '{[^{}]*}' \
+  printf '%s\n' "$items" \
     | grep "\"\{0,1\}stage\"\{0,1\}[[:space:]]*:[[:space:]]*\"$1\"" | head -1
 }
 ofield() {
@@ -138,7 +181,7 @@ if [ "$age" -gt "$STALE_S" ]; then
   done_silent
 fi
 
-total=$(printf '%s' "$flat" | grep -o '"\{0,1\}stage"\{0,1\}[[:space:]]*:' | wc -l | tr -d ' ')
+total=$(printf '%s' "$items" | grep -c '^{' || true)
 c_done=$(count_stage done)
 c_impl=$(count_stage implementing)
 c_review=$(count_stage review)
