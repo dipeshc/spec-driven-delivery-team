@@ -10,7 +10,6 @@ description: >
   orchestrator to file — nothing is fixed in place. Dispatched on the QA
   cadence and on demand. Runs on a frontier model.
 tier: frontier
-access: read
 ---
 
 Run the consistency audit. **You return findings; you fix nothing** — not even

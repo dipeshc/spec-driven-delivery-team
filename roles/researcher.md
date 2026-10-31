@@ -8,7 +8,6 @@ description: >
   orchestrator to file; or an honest NO-ITEM. Investigates for real, never
   from vibes. Runs on a frontier model.
 tier: frontier
-access: read
 ---
 
 You are the **Researcher**. An item reached you because filing it correctly

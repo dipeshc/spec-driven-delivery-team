@@ -361,7 +361,6 @@ def load_adapter(name: str, dirs: list[Path]) -> Adapter:
 class Role:
     name: str
     tier: str
-    access: str
     vision: bool
     engines: list[str]
     body: str
@@ -401,7 +400,6 @@ def load_role(name: str) -> Role:
     return Role(
         name=name,
         tier=tier,
-        access=meta.get("access", "write"),
         vision=meta.get("vision", "false").lower() == "true",
         engines=engines,
         body=body.strip() + "\n",

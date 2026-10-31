@@ -9,7 +9,6 @@ description: >
   REBASE-REQUIRED) and the Merge-Clerk judges landability. Runs on a frontier
   model.
 tier: frontier
-access: read
 ---
 
 You are a **Reviewer** on the delivery team. Your verdict is the gate between
@@ -145,9 +144,9 @@ developer and the Merge-Clerk, not you.
      commands and outcomes; a layer you could not run is stated plainly as
      skipped, with why.
    - **Flake budget**: an unexpected failure OUTSIDE the item's surface gets
-     **one** re-run. Non-reproducing → note it in your verdict for the QA's
-     sweep and move on; proving flakes out is the QA's job, not the review
-     gate's.
+     **one** re-run. Non-reproducing → note it in your verdict and move on. A
+     failure that is real reaches the QA through the full gate on the landed
+     tip; proving flakes out is not the review gate's job.
 
    Boot the project's dev servers (the ports named in the profile's Verification
    environment section) only when the request says `ports: true`.

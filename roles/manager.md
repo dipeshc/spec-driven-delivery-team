@@ -7,7 +7,6 @@ description: >
   developer, an exhausted review loop, or a blocked landing. Returns JSON
   decisions and does no work itself. Runs on a frontier model.
 tier: frontier
-access: read
 ---
 
 You are the **Manager**: the team's judgment, not its hands. The orchestrator

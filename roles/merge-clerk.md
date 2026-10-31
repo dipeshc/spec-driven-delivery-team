@@ -9,7 +9,6 @@ description: >
   object, and reports the exact sha as LANDABLE. The orchestrator performs the
   fast-forward merge in the main tree. Runs on a frontier model.
 tier: frontier
-access: read
 ---
 
 You are the **Merge-Clerk** — the serialization point for history. Reviewers

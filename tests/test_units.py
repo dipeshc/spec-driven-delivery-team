@@ -181,7 +181,7 @@ def test_doctor_checks_role_vision_against_its_engine(sdt: ModuleType, tmp_path:
 def test_unstartable_engine_is_a_failed_run(sdt: ModuleType, tmp_path: Path) -> None:
     (tmp_path / "ghost.toml").write_text('command = ["ghost-cli-not-on-path"]\n')
     adapter = sdt.load_adapter("ghost", [tmp_path])
-    role = sdt.Role(name="developer", tier="mid", access="write", vision=False, engines=[], body="BODY\n")
+    role = sdt.Role(name="developer", tier="mid", vision=False, engines=[], body="BODY\n")
     run = sdt.RoleRun(
         run_id="r1",
         role=role,
@@ -287,7 +287,7 @@ def test_every_role_loads(sdt: ModuleType) -> None:
 
 
 def test_prompt_shape(sdt: ModuleType) -> None:
-    role = sdt.Role(name="developer", tier="mid", access="write", vision=False, engines=[], body="BODY\n")
+    role = sdt.Role(name="developer", tier="mid", vision=False, engines=[], body="BODY\n")
     prompt = sdt.build_prompt(role, {"role": "developer", "scoped gate": ["a", "b"]}, {"message": "IMPLEMENT"}, "note")
     assert prompt.startswith("BODY")
     assert "- role: developer" in prompt

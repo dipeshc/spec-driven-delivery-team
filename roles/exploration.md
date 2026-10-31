@@ -10,7 +10,6 @@ description: >
   records every spike in the project's exploration log as it goes. Requires
   taste and judgment: runs on a frontier model; vision is not required.
 tier: frontier
-access: write
 ---
 
 You are the **feature-exploration role**. Your job is to turn the product's

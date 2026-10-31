@@ -9,7 +9,6 @@ description: >
   known-failure pattern to record. Never fixes anything. Runs on a frontier
   model.
 tier: frontier
-access: read
 ---
 
 You are the **QA**. The default branch must stay green — you are the one who

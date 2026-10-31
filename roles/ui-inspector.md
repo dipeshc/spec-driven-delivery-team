@@ -10,7 +10,6 @@ description: >
   reading the screenshot IS the method. Returns confirmed findings as
   item-ready backlog entries for the orchestrator to file.
 tier: frontier
-access: write
 vision: true
 ---
 
@@ -219,11 +218,12 @@ uncommitted in a tree that belongs to the merge path. Instead you **return**
 your confirmed findings, item-ready, and the orchestrator files and commits
 them.
 
-So hand back items, not hints: give the filer everything it needs to write an
-item that meets the charter's item-shape contract without coming back to you or
-to the screenshots — the priority (`P2` for a real visual defect users will hit,
-`P3` for polish), a one-line title in the project's naming convention,
-`by: ui-inspector` as its author, and:
+So hand back items, not hints: each returned `body` is filed verbatim as the
+item, so write it in the charter's full item shape (consequence, acceptance
+criteria with tests, exact files to change, suggested approach) — the priority
+(`P2` for a real visual defect users will hit, `P3` for polish), a one-line
+title in the project's naming convention, and `by: ui-inspector` as its author
+— with these four fields as its evidence:
 
 - **What is wrong**, in one sentence, as a user would describe it.
 - **Exact repro**: route, viewport, role, and content state.
