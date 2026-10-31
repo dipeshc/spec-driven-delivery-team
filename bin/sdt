@@ -67,6 +67,21 @@ DISPATCH_MESSAGES = {
 OWNER_RUN_ROLES = ("exploration", "ui-inspector")
 EVENT_CAP = 20
 BLOCKED_MARK = "⛔"
+# One failure as runners print it: FAIL/FAILED/FAILURE/ERROR as an upper-case
+# word (pytest, unittest, Go, Jest, cargo), TAP's `not ok`, Jest's `●` bullet,
+# or an `error:` diagnostic. Jest prints one `FAIL <file>` line per file but one
+# `● <describe> › <test>` line per failing test, so the bullet keeps a pattern
+# for one test from covering a new failure in the same file; its `● Console`
+# blocks are bullets too and fail closed. Plural banners (pytest's FAILURES)
+# and lower-case counts ("1 failed") are not failures, but some summaries are:
+# unittest's `FAILED (failures=N)`, cargo's `test result: FAILED.` and Go's bare
+# `FAIL` must each be covered by an exact pattern, or the command counts as new.
+FAILURE_LINE: re.Pattern[str] = re.compile(
+    r"\b(?:FAIL|FAILED|FAILURE|ERROR)\b|^\s*not ok\b|^\s*●|\b[Ee]rror(?:\[\w+\])?:"
+)
+# A gate command inherits the owner's environment, so its output may be coloured;
+# a colour code glued to a marker (`\x1b[31mFAILED`) hides it from FAILURE_LINE.
+ANSI_ESCAPE: re.Pattern[str] = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class SdtError(Exception):
@@ -136,7 +151,7 @@ class Config:
     poll_seconds: int = 5
     stall_seconds: int = 900
     adopt_attempts: int = 2
-    known_failures: str = ""
+    known_failures: str = ".delivery-team/known-failures.txt"
     consistency_every: int = 5
     ports_exclusive: bool = False
     worktrees_dir: str = ".delivery-team/worktrees"
@@ -219,7 +234,8 @@ def load_config(path: Path) -> Config:
     cfg.stall_seconds = int(liveness.get("stall_seconds", 900))
     cfg.adopt_attempts = int(liveness.get("adopt_attempts", 2))
     qa = _section(data, "qa")
-    cfg.known_failures = str(qa.get("known_failures", ""))
+    # An empty value means the default: QA's environment rulings must always land somewhere.
+    cfg.known_failures = str(qa.get("known_failures", "")) or cfg.known_failures
     cfg.consistency_every = int(qa.get("consistency_every", 5))
     cfg.ports_exclusive = bool(_section(data, "ports").get("exclusive", False))
     wt = _section(data, "worktrees")
@@ -546,6 +562,19 @@ class RunResult:
     seconds: int = 0
 
 
+def kill_group(proc: subprocess.Popen[str]) -> None:
+    """Stop a process started in its own session, and everything it spawned: SIGTERM, then SIGKILL."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=10)
+    except ProcessLookupError:
+        pass
+
+
 class RoleRun:
     """One headless engine process playing one role."""
 
@@ -635,15 +664,7 @@ class RoleRun:
         if self.proc is None:
             return
         self.killed_for = reason
-        try:
-            os.killpg(self.proc.pid, signal.SIGTERM)
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-                self.proc.wait(timeout=10)
-        except ProcessLookupError:
-            pass
+        kill_group(self.proc)
 
     def alive_for(self) -> int:
         return now() - self.started
@@ -671,6 +692,114 @@ class RoleRun:
             detail = describe_failure(exc, code, stdout)
             return RunResult(False, error=detail, log_path=self.log_path, seconds=seconds)
         return RunResult(True, payload=payload, log_path=self.log_path, seconds=seconds)
+
+
+# ---------------------------------------------------------------- the full gate
+
+
+def new_failure(output: str, code: int, known: list[str]) -> str:
+    """Why a failed command's output is a new failure, or "" when every failure in it is known.
+
+    Fails closed: output with no failure line to match (a crash) and a runner that
+    died on a signal are new, whatever known patterns they contain.
+    """
+    if code < 0 or code > 128:
+        return f"exit {code} means a signal: the runner may have died before printing every failure"
+    lines = [ln for ln in ANSI_ESCAPE.sub("", output).splitlines() if FAILURE_LINE.search(ln)]
+    if not lines:
+        return "no failure line to match against the known failures"
+    uncovered = [ln.strip() for ln in lines if not any(p in ln for p in known)]
+    if not uncovered:
+        return ""
+    return f"{len(uncovered)} failure line(s) match no known pattern:\n" + "\n".join(uncovered[:20])
+
+
+class GateRun:
+    """The full gate on one tip: its commands in order, each a background process that `poll()` advances."""
+
+    def __init__(
+        self,
+        *,
+        tip: str,
+        cwd: Path,
+        commands: list[str],
+        log_path: Path,
+        timeout: int,
+        known: Callable[[], list[str]],
+    ) -> None:
+        self.tip = tip
+        self.cwd = cwd
+        self.commands = commands
+        self.log_path = log_path
+        self.timeout = timeout
+        self.known = known
+        self.failures: list[str] = []
+        self.index = -1
+        self.proc: subprocess.Popen[str] | None = None
+        self.started = now()
+        self._offset = 0
+        log_path.write_text("")
+        # Append mode, so the orchestrator's verdict lines always land after the command's own output.
+        self._log = open(log_path, "a")
+        self._next()
+
+    def _next(self) -> None:
+        self.index += 1
+        self.proc = None
+        if self.index == len(self.commands):
+            self._log.close()
+            return
+        cmd = self.commands[self.index]
+        self._log.write(f"$ {cmd}\n")
+        self._log.flush()
+        self._offset = self.log_path.stat().st_size
+        self.started = now()
+        self.proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            cwd=self.cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=self._log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+
+    def poll(self) -> bool:
+        """True once every command has run; kills a command that outlives the timeout."""
+        while self.proc is not None:
+            code = self.proc.poll()
+            if code is None and now() - self.started <= self.timeout:
+                return False
+            cmd = self.commands[self.index]
+            if code is None:
+                kill_group(self.proc)
+                self._log.write("\n[timed out]\n\n")
+                self.failures.append(cmd)
+            else:
+                self._judge(cmd, code)
+            self._next()
+        return True
+
+    def _judge(self, cmd: str, code: int) -> None:
+        with open(self.log_path, "rb") as fh:
+            fh.seek(self._offset)
+            output = fh.read().decode(errors="replace")
+        self._log.write(f"\n[exit {code}]\n")
+        if code != 0:
+            reason = new_failure(output, code, self.known())
+            if reason:
+                self.failures.append(cmd)
+                self._log.write(f"(new failure: {reason})\n")
+            else:
+                self._log.write("(known failure)\n")
+        self._log.write("\n")
+        self._log.flush()
+
+    def kill(self) -> None:
+        if self.proc is not None:
+            kill_group(self.proc)
+        self._log.close()
 
 
 # ---------------------------------------------------------------- project
@@ -1001,46 +1130,37 @@ class Project:
 
     # -- QA gate
 
-    def run_full_gate(self, path: Path, log_path: Path) -> tuple[bool, list[str]]:
-        """Every full-gate command in order; failures filtered by known-failures patterns."""
-        known = self.known_failure_patterns()
-        new_failures: list[str] = []
-        with open(log_path, "w") as fh:
-            for cmd in self.cfg.gate_full:
-                fh.write(f"$ {cmd}\n")
-                fh.flush()
-                try:
-                    proc = sh(cmd, path, timeout=self.cfg.timeout_for("qa_gate"))
-                except subprocess.TimeoutExpired:
-                    fh.write("[timed out]\n\n")
-                    new_failures.append(cmd)
-                    continue
-                output = proc.stdout + proc.stderr
-                fh.write(output + f"\n[exit {proc.returncode}]\n\n")
-                if proc.returncode != 0:
-                    if any(p in output for p in known):
-                        fh.write("(known failure)\n")
-                        continue
-                    new_failures.append(cmd)
-        return not new_failures, new_failures
+    def start_full_gate(self, tip: str, path: Path, log_path: Path) -> GateRun:
+        """Every full-gate command in order, in the background; each failure is filtered by the known-failures patterns."""
+        return GateRun(
+            tip=tip,
+            cwd=path,
+            commands=list(self.cfg.gate_full),
+            log_path=log_path,
+            timeout=self.cfg.timeout_for("qa_gate"),
+            known=self.known_failure_patterns,
+        )
 
-    def record_known_failures(self, patterns: list[str], reason: str) -> None:
-        """Append QA's environment ruling to the known-failures file and commit it explicit-path."""
-        if not patterns or not self.cfg.known_failures:
-            log("no known-failures file configured; QA's environment ruling not recorded")
-            return
+    def record_known_failures(self, patterns: list[str], reason: str) -> str:
+        """Append QA's environment ruling to the known-failures file and commit it explicit-path; say where it landed.
+
+        A file git ignores is still written, so the ruling holds, but it is left uncommitted.
+        """
+        if not patterns:
+            return "QA returned no pattern; nothing recorded"
         path = self.root / self.cfg.known_failures
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a") as fh:
             fh.write(f"# {time.strftime('%Y-%m-%d')} qa: {reason}\n")
             for pattern in patterns:
                 fh.write(pattern + "\n")
+        if git_ok("check-ignore", "-q", "--", str(path), cwd=self.root):
+            return f"recorded in {self.cfg.known_failures}, which git ignores, so it is not committed"
         git("add", "--", str(path), cwd=self.root)
         self.commit(f"chore(qa): record known failure — {reason[:60]}", path)
+        return f"recorded in {self.cfg.known_failures}"
 
     def known_failure_patterns(self) -> list[str]:
-        if not self.cfg.known_failures:
-            return []
         path = self.root / self.cfg.known_failures
         if not path.is_file():
             return []
@@ -1112,7 +1232,10 @@ class Orchestrator:
         self.merges = 0
         self.qa_state = "idle"
         self.qa_green_tip = ""
-        self.qa_pending_tip = ""
+        # Tips waiting for the full gate, oldest first: landings go on while a gate
+        # runs, and every tip is gated, not only the newest.
+        self.qa_pending_tips: list[str] = []
+        self.gate: GateRun | None = None
         # The newest tip already queued for the full gate or committed by the run
         # itself. It starts at the tip the run opens on: work landed while no run
         # was active had its full gate run by its own lander.
@@ -1244,11 +1367,12 @@ class Orchestrator:
     def role_worktree(self, name: str, ref: str) -> Path | None:
         """The persistent detached worktree `name`, reset to `ref` for the next run.
 
-        None while a live run has it as its cwd: resetting a tree under a run
-        would pull its checkout away mid-task, so the caller waits a tick instead.
+        None while a live run or the running full gate has it as its cwd:
+        resetting a tree under a run would pull its checkout away mid-task, so
+        the caller waits a tick instead.
         """
         path = self.p.worktree_path(name)
-        if any(r.cwd == path for r in self.runs):
+        if any(r.cwd == path for r in self.runs) or (self.gate is not None and self.gate.cwd == path):
             return None
         self.p.ensure_detached_worktree(name)
         self.p.reset_detached(path, ref)
@@ -1430,7 +1554,10 @@ class Orchestrator:
         return sum(1 for r in self.runs if r.role.name == "developer")
 
     def ports_held(self) -> bool:
-        return any(it.ports and it.stage in ("implementing", "review", "landing") for it in self.items.values())
+        """True while the exclusive-resource slot is taken: by a running full gate, or a `ports` item in flight."""
+        return self.gate is not None or any(
+            it.ports and it.stage in ("implementing", "review", "landing") for it in self.items.values()
+        )
 
     def dispatch_ready(self) -> None:
         queued = sorted(
@@ -1804,7 +1931,7 @@ class Orchestrator:
             removed, how = self.p.remove_item_worktree(it.slug)
             if not removed:
                 self.event("warning", f"{it.slug}: {how}")
-            self.qa_pending_tip = sha
+            self.qa_pending_tips.append(sha)
             self.accounted_tip = sha
             if self.cfg.consistency_every and self.merges % self.cfg.consistency_every == 0:
                 self.consistency_due = True
@@ -1825,33 +1952,40 @@ class Orchestrator:
         if tip == self.accounted_tip:
             return
         self.accounted_tip = tip
-        if tip == self.qa_green_tip:
+        if tip == self.qa_green_tip or tip in self.qa_pending_tips:
             return
-        self.qa_pending_tip = tip
+        self.qa_pending_tips.append(tip)
         self.event("qa-queued", f"{tip[:8]} holds work landed outside the run; queued for the full gate")
 
     def run_qa_gate(self) -> None:
+        """Advance the running full gate, or start the next queued tip's; never waits on a gate command."""
         self.queue_outside_tip()
-        if not self.qa_pending_tip or self.qa_state == "gating":
+        if self.gate is not None:
+            if not self.gate.poll():
+                return
+            gate, self.gate = self.gate, None
+            self.on_gate_done(gate)
+        if not self.qa_pending_tips:
             return
         if self.cfg.ports_exclusive and self.ports_held():
             self.qa_state = "waiting for the exclusive-resource slot"
             return
-        tip = self.qa_pending_tip
+        tip = self.qa_pending_tips[0]
         if not self.cfg.gate_full:
-            self.qa_pending_tip = ""
+            self.qa_pending_tips.pop(0)
             self.qa_green_tip = tip
             self.qa_state = f"no full gate configured; {tip[:8]} unverified"
             return
         wt = self.role_worktree("qa", tip)
         if wt is None:
             return
-        self.qa_pending_tip = ""
-        self.qa_state = "gating"
-        self.write_ledger()
-        log_path = self.p.runs_dir / f"qa-gate-{tip[:8]}.log"
-        ok, failures = self.p.run_full_gate(wt, log_path)
-        if ok:
+        self.qa_pending_tips.pop(0)
+        self.qa_state = f"gating {tip[:8]}"
+        self.gate = self.p.start_full_gate(tip, wt, self.p.runs_dir / f"qa-gate-{tip[:8]}.log")
+
+    def on_gate_done(self, gate: GateRun) -> None:
+        tip, failures, log_path = gate.tip, gate.failures, gate.log_path
+        if not failures:
             self.qa_green_tip = tip
             self.qa_state = f"green at {tip[:8]}"
             self.event("qa-green", f"full gate green at {tip[:8]}")
@@ -1874,7 +2008,7 @@ class Orchestrator:
             "log_tail": tail,
             "last_green_tip": self.qa_green_tip,
         }
-        self.start(self.p.start_run("qa", payload, cwd=wt, tag=tip[:8], extra_dirs=[self.p.runs_dir]))
+        self.start(self.p.start_run("qa", payload, cwd=gate.cwd, tag=tip[:8], extra_dirs=[self.p.runs_dir]))
 
     def regression_open(self, signature: str) -> bool:
         """True while a filed regression item for this failure signature has not landed or blocked."""
@@ -1914,10 +2048,20 @@ class Orchestrator:
         if message == "ENVIRONMENT":
             patterns = [str(x) for x in res.payload.get("patterns", []) if str(x).strip()]
             reason = str(res.payload.get("reason", ""))
-            self.open_regressions.pop(signature, None)
-            self.housekeep("record known failures", partial(self.p.record_known_failures, patterns, reason))
-            self.qa_state = f"environment fault at {run.tag}: {reason}"
+            tag = run.tag
+
+            def record() -> None:
+                # The signature stays open until the patterns are on disk, so a red
+                # gated while the write waits on a landing does not page QA again.
+                try:
+                    landed = self.p.record_known_failures(patterns, reason)
+                finally:
+                    self.open_regressions.pop(signature, None)
+                self.event("qa-environment", f"{tag}: {landed}")
+
+            self.qa_state = f"environment fault at {tag}: {reason}"
             self.event("qa-environment", self.qa_state)
+            self.housekeep("record known failures", record)
             return
         items = [i for i in res.payload.get("items", []) if isinstance(i, dict)]
         tag = run.tag
@@ -2042,7 +2186,8 @@ class Orchestrator:
             self.runs
             or self.manager_busy
             or self.review_batch
-            or self.qa_pending_tip
+            or self.qa_pending_tips
+            or self.gate is not None
             or self.consistency_due
             or self.housekeeping
             or self.retriage
@@ -2067,6 +2212,8 @@ class Orchestrator:
         except KeyboardInterrupt:
             for run in self.runs:
                 run.kill("interrupted")
+            if self.gate is not None:
+                self.gate.kill()
             self.event("run", "interrupted; running roles stopped, worktrees left on disk")
             self.write_ledger()
             (self.p.runs_dir / "sdt.pid").unlink(missing_ok=True)

@@ -38,8 +38,10 @@ of the full gate, on the
 actual landed tip, in your worktree; it is **fail-closed** — a nonzero exit
 with no parsed failures (crash, OOM, a runner that died before emitting
 results, a truncated log) is a failure until proven otherwise, never a silent
-green — and failures matching the known-failures file are filtered out before
-you are involved. You are dispatched only for what remains: a **new** red.
+green — and known failures are filtered out before you are involved, failure
+by failure: a failing command is filtered only when every failure line in its
+output matches the known-failures file, so a known failure never hides a new
+one beside it. You are dispatched only for what remains: a **new** red.
 
 ## Your dispatch
 
@@ -59,15 +61,22 @@ failing tip; the gate's full log is at `log_path` (readable to you).
    - A landing broke it → `REGRESSION`. Return the item to file (below).
    - Infra flake, owner-environment fault, a layer this environment cannot run
      (the profile's Verification environment says which) → `ENVIRONMENT`.
-     Return a known-failure pattern (a substring that identifies this failure
-     and nothing else) with a justifying reason; the orchestrator records it
-     in the known-failures file so the same red never pages anyone again. A
-     pattern that would also mask a real failure is wrong — be exact.
+     Return known-failure patterns (substrings that identify this failure and
+     nothing else) with a justifying reason; the orchestrator records them in
+     the known-failures file so the same red never pages anyone again. The
+     gate matches patterns line by line against the failure lines (`FAIL`,
+     `FAILED`, `FAILURE` or `ERROR` as an upper-case word, TAP's `not ok`,
+     Jest's `●` bullet, an `error:` diagnostic) and filters a command only
+     when every one holds a pattern, so cover each failure line this failure
+     prints; the log lists, under each new failure, the lines no pattern
+     covers yet. A pattern that would also mask a real failure is wrong — be
+     exact.
    - A crash with no parsed failures: rerun the failing command once in your
      worktree. If it reproduces, it is a regression against the tip, filed
      with the exit code and the log slice — an unexplained crash is a finding,
      not noise. If it does not, it is `ENVIRONMENT` with the reason "did not
-     reproduce".
+     reproduce". The gate never filters a crash (no failure line, or an exit
+     above 128), so a recurrence comes back to you to rule afresh.
 
 ## The item you return
 

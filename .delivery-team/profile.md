@@ -16,8 +16,9 @@ repository.
   blind spots are listed under Quality gate → Not covered).
 - **Layout:**
   - `.claude-plugin/` — plugin manifest (the Claude Code packaging).
-  - `.delivery-team/` — this profile and `config.toml` (tracked) beside the
-    run's git-ignored runtime state.
+  - `.delivery-team/` — this profile, `config.toml` and the known-failures
+    file QA's environment rulings land in (tracked) beside the run's
+    git-ignored runtime state.
   - `bin/sdt` — the orchestrator.
   - `adapters/` — one TOML per engine.
   - `roles/` — the team's role prompts.

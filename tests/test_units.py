@@ -4,6 +4,8 @@ import json
 import re
 import shutil
 import subprocess
+import time
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -25,6 +27,13 @@ def test_config_defaults(sdt: ModuleType, tmp_path: Path) -> None:
     assert cfg.backlog_dir == "docs/backlog"
     assert cfg.timeout_for("developer") == 3600
     assert cfg.engine_for("developer") == "claude"
+    assert cfg.known_failures == ".delivery-team/known-failures.txt"
+
+
+def test_config_empty_known_failures_means_the_default(sdt: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[qa]\nknown_failures = ""\n')
+    assert sdt.load_config(path).known_failures == ".delivery-team/known-failures.txt"
 
 
 def test_config_engines_cover_per_role_routes(sdt: ModuleType, tmp_path: Path) -> None:
@@ -436,14 +445,18 @@ def test_failed_triage_of_held_items_retries_then_blocks(
 # ---- QA gate
 
 
-def gate_orchestrator(sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[Any]]:
+def gate_orchestrator(
+    sdt: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: str = '[gate]\nfull = ["test ! -e red.txt"]\n[qa]\nknown_failures = "known-failures.txt"\n',
+    gitignore: str = ".delivery-team/*\n!.delivery-team/config.toml\n",
+) -> tuple[Any, list[Any]]:
     """An orchestrator whose full gate fails once `red.txt` exists; its QA dispatches are recorded, never spawned."""
     repo = tmp_path / "repo"
     (repo / ".delivery-team").mkdir(parents=True)
-    (repo / ".delivery-team" / "config.toml").write_text(
-        '[gate]\nfull = ["test ! -e red.txt"]\n[qa]\nknown_failures = "known-failures.txt"\n'
-    )
-    (repo / ".gitignore").write_text(".delivery-team/*\n!.delivery-team/config.toml\n")
+    (repo / ".delivery-team" / "config.toml").write_text(config)
+    (repo / ".gitignore").write_text(gitignore)
     sdt.git("init", "-q", "-b", "main", cwd=repo)
     for key, value in (("user.email", "t@example.com"), ("user.name", "Test"), ("commit.gpgsign", "false")):
         sdt.git("config", key, value, cwd=repo)
@@ -471,6 +484,16 @@ def gated(orch: Any) -> set[str]:
     return {log.stem.removeprefix("qa-gate-") for log in orch.p.runs_dir.glob("qa-gate-*.log")}
 
 
+def until_gated(orch: Any, step: Callable[[], None]) -> None:
+    """Run `step` until no full gate is running: the gate runs in the background and a later step applies its verdict."""
+    deadline = time.monotonic() + 30
+    step()
+    while orch.gate is not None:
+        assert time.monotonic() < deadline, "the full gate never finished"
+        time.sleep(0.02)
+        step()
+
+
 def test_outside_tip_is_gated_and_housekeeping_is_not(
     sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -482,17 +505,17 @@ def test_outside_tip_is_gated_and_housekeeping_is_not(
     assert gated(orch) == set(), "neither the opening tip nor the run's own housekeeping is gated"
 
     green = land_outside(sdt, repo, "plain.txt")
-    orch.tick()
+    until_gated(orch, orch.tick)
     assert orch.qa_green_tip == green
 
     outside = land_outside(sdt, repo, "outside.txt")
     orch.housekeep("record known failures", partial(record_known_failure, orch))
-    orch.tick()
+    until_gated(orch, orch.tick)
     assert orch.qa_green_tip == outside, "a housekeeping commit stacked on an outside tip does not hide it"
     assert gated(orch) == {green[:8], outside[:8]}
 
     red = land_outside(sdt, repo, "red.txt")
-    orch.tick()
+    until_gated(orch, orch.tick)
     assert [payload["message"] for payload in dispatched] == ["REGRESSION-REQUEST"]
     assert dispatched[0]["tip"] == red
     assert dispatched[0]["last_green_tip"] == outside
@@ -511,7 +534,7 @@ def test_outside_tip_racing_housekeeping_is_gated(
 
     orch.housekeep("record known failures", outside_then_housekeeping)
     stacked = str(sdt.git("rev-parse", "main", cwd=repo))
-    orch.tick()
+    until_gated(orch, orch.tick)
     assert orch.qa_green_tip == stacked, "an outside commit beneath the housekeeping commit is gated through it"
 
     def housekeeping_then_outside() -> None:
@@ -520,8 +543,124 @@ def test_outside_tip_racing_housekeeping_is_gated(
 
     orch.housekeep("record known failures", housekeeping_then_outside)
     on_top = str(sdt.git("rev-parse", "main", cwd=repo))
-    orch.tick()
+    until_gated(orch, orch.tick)
     assert orch.qa_green_tip == on_top, "an outside commit on top of the housekeeping commit is gated"
+
+
+@pytest.mark.parametrize(
+    ("output", "code", "new"),
+    [
+        (["FAILED tests/a.py::test_known_flaky - ConnectionError", "1 failed, 3 passed in 0.1s"], 1, False),
+        (["\x1b[31mFAILED\x1b[0m tests/a.py::\x1b[1mtest_known_flaky\x1b[0m", "\x1b[31m1 failed\x1b[0m"], 1, False),
+        (["FAILED tests/a.py::test_known_flaky", "FAILED tests/b.py::test_brand_new_regression"], 1, True),
+        (["collecting tests/a.py::test_known_flaky", "Segmentation fault"], 1, True),
+        (["tests/a.py::test_known_flaky FAILED"], 137, True),
+        ([" FAIL  src/net.test.js", "  ● api › fetches the feed", "Tests: 1 failed, 2 passed"], 1, False),
+        ([" FAIL  src/net.test.js", "  ● api › fetches the feed", "  ● api › parses the feed"], 1, True),
+    ],
+    ids=[
+        "only-known",
+        "coloured-only-known",
+        "known-and-new",
+        "crash-naming-a-known-test",
+        "killed-after-a-known-failure",
+        "jest-only-known",
+        "jest-known-and-new-in-one-file",
+    ],
+)
+def test_full_gate_filters_each_failure_not_each_command(
+    sdt: ModuleType, tmp_path: Path, output: list[str], code: int, new: bool
+) -> None:
+    project = make_project(sdt, tmp_path)
+    known = "# 2026-10-31 qa: flaky network\ntest_known_flaky\n# 2026-10-31 qa: feed host unreachable\nsrc/net.test.js\napi › fetches the feed\n"
+    (project.root / project.cfg.known_failures).write_text(known)
+    cmd = "; ".join(f"echo '{line}'" for line in output) + f"; exit {code}"
+    project.cfg.gate_full = ["true", cmd]
+    gate = project.start_full_gate("tip", project.root, project.runs_dir / "gate.log")
+    deadline = time.monotonic() + 30
+    while not gate.poll():
+        assert time.monotonic() < deadline, "the full gate never finished"
+        time.sleep(0.02)
+    assert gate.failures == ([cmd] if new else [])
+    assert ("(new failure: " if new else "(known failure)") in gate.log_path.read_text()
+
+
+def test_full_gate_runs_in_the_background(sdt: ModuleType, tmp_path: Path) -> None:
+    project = make_project(sdt, tmp_path, '[gate]\nfull = ["sleep 3"]\n[limits.liveness]\npoll_seconds = 1\n')
+    o = sdt.Orchestrator(project, engine=None, watch=False, label="t", args_text="")
+    polls: list[int] = []
+
+    def poll() -> bool:
+        polls.append(1)
+        return False
+
+    role, adapter = SimpleNamespace(name="developer"), SimpleNamespace(name="fake")
+    developer = SimpleNamespace(role=role, tag="P2-a", adapter=adapter, model="", cwd=tmp_path, poll=poll)
+    developer.alive_for, developer.last_signal = int, 0
+    o.start(developer)
+    o.write_ledger()
+    state = project.board_dir / "state.json"
+    before = json.loads(state.read_text())["generatedAt"]
+    project.ensure_detached_worktree("qa")
+    tip = commit(sdt, project.root, "landed")
+    o.qa_pending_tips.append(tip)
+
+    started = time.monotonic()
+    o.run_qa_gate()
+    assert time.monotonic() - started < 2, "run_qa_gate waited for the gate command"
+    assert o.gate is not None and o.gate.tip == tip and o.qa_green_tip != tip
+    assert o.ports_held(), "a running gate holds the exclusive-resource slot"
+    later = commit(sdt, project.root, "landed-later")
+    o.qa_pending_tips.append(later)
+    o.run_qa_gate()
+    assert o.gate.tip == tip and o.qa_pending_tips == [later], "one gate at a time"
+
+    # generatedAt has one-second resolution.
+    time.sleep(o.cfg.poll_seconds + 0.1)
+    o.tick()
+    assert polls, "a tick during the gate polls the role runs"
+    assert json.loads(state.read_text())["generatedAt"] > before, "a tick during the gate rewrites the ledger"
+    assert not o.drained()
+
+    deadline = time.monotonic() + 30
+    while o.qa_green_tip != tip:
+        assert time.monotonic() < deadline, "the gate's verdict was never applied"
+        time.sleep(0.05)
+        o.tick()
+    assert o.gate is not None and o.gate.tip == later, "the queued tip is gated next"
+    o.gate.kill()
+
+
+@pytest.mark.parametrize("tracked", [True, False], ids=["tracked", "git-ignored"])
+def test_environment_ruling_is_recorded_without_a_known_failures_key(
+    sdt: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tracked: bool
+) -> None:
+    config = """[gate]\nfull = ['test ! -e red.txt || { echo "FAILED tests/env.py::test_needs_gpu"; exit 1; }']\n"""
+    ignore = ".delivery-team/*\n!.delivery-team/config.toml\n" + (
+        "!.delivery-team/known-failures.txt\n" if tracked else ""
+    )
+    orch, dispatched = gate_orchestrator(sdt, tmp_path, monkeypatch, config=config, gitignore=ignore)
+    repo = orch.p.root
+    orch.tick()
+    red = land_outside(sdt, repo, "red.txt")
+    until_gated(orch, orch.tick)
+    (request,) = dispatched
+    ruling = {"message": "ENVIRONMENT", "patterns": ["test_needs_gpu"], "reason": "no GPU on this machine"}
+    orch.on_qa(SimpleNamespace(payload=request, tag=red[:8]), sdt.RunResult(True, payload=ruling))
+
+    known = repo / ".delivery-team" / "known-failures.txt"
+    assert "test_needs_gpu" in known.read_text().splitlines()
+    assert bool(sdt.git("ls-files", "--", str(known), cwd=repo)) == tracked
+    landed = "recorded in .delivery-team/known-failures.txt"
+    if not tracked:
+        landed += ", which git ignores, so it is not committed"
+    assert f"{red[:8]}: {landed}" in [e["text"] for e in orch.events if e["kind"] == "qa-environment"]
+
+    again = land_outside(sdt, repo, "again.txt")
+    until_gated(orch, orch.tick)
+    assert len(dispatched) == 1, "the recorded failure paged QA again"
+    assert orch.qa_green_tip == again
+    assert "(known failure)" in (orch.p.runs_dir / f"qa-gate-{again[:8]}.log").read_text()
 
 
 # ---- role worktrees and routing
@@ -618,8 +757,8 @@ def test_gate_leaves_a_live_consistency_tree_alone(sdt: ModuleType, orch: Any) -
     (audit.cwd / "audit-notes").write_text("")
     tip = commit(sdt, orch.p.root, "landed")
     orch.cfg.gate_full = ["true"]
-    orch.qa_pending_tip = tip
-    orch.run_qa_gate()
+    orch.qa_pending_tips.append(tip)
+    until_gated(orch, orch.run_qa_gate)
     assert orch.qa_green_tip == tip
     assert head(sdt, orch.p.worktree_path("qa")) == tip
     assert head(sdt, audit.cwd) == audited

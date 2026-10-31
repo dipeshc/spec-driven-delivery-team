@@ -1,9 +1,12 @@
 # The framework's per-project directory holds runtime state (progress ledger,
-# worktrees, role-run logs, notes) beside the two tracked configuration files.
-# This repo dogfoods the framework, so its own profile and config are tracked.
+# worktrees, role-run logs, notes) beside the tracked configuration files and
+# the known-failures file QA's environment rulings are committed to. This repo
+# dogfoods the framework, so its own profile, config and known failures are
+# tracked.
 .delivery-team/*
 !.delivery-team/profile.md
 !.delivery-team/config.toml
+!.delivery-team/known-failures.txt
 
 # Python tooling caches
 __pycache__/

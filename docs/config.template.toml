@@ -75,7 +75,15 @@ adopt_attempts = 2
 [qa]
 # File of substring patterns (one per line, # comments) naming failures that
 # are already known; only a failure matching none of them is a regression.
-known_failures = ""
+# Matching is per failure, not per command: a failing command is filtered only
+# when every failure line in its output (FAIL, FAILED, FAILURE or ERROR as an
+# upper-case word, TAP's `not ok`, Jest's `●` bullet, or an `error:` diagnostic)
+# holds a pattern. A command with no failure line (a crash) or an exit above
+# 128 (a signal) is always a new failure. QA's environment rulings are appended
+# here and committed explicit-path, so keep the file tracked: if
+# .delivery-team/* is git-ignored, add an exception for it (an ignored file is
+# written, never committed). Empty means this default.
+known_failures = ".delivery-team/known-failures.txt"
 # Dispatch the consistency-check role every N merges (0 = never).
 consistency_every = 5
 
